@@ -1,0 +1,425 @@
+/*
+Name:            Dvp2_CaseAction
+Purpose:         This class is created to create related/child cases and work order depending on the various valus of case type and case sub-type.
+                 CaseTriggerHandler class for case Operations
+Author:          Varun Sharma
+Created Date:    Aug 2nd 2017  
+
+Version       Modified By                     Modified Date
+1.0           Varun Sharma                    Aug 2nd 2017
+2.0           Varun Sharma                    Sep 12th 2017
+3.0           Neha Pandey                     Sep 13th 2017
+4.0           Sudeepthi                       Sep 22nd 2017
+5.0           Varun Sharma                    Dec 8th  2017     
+*/
+
+
+public without sharing class Dvp2_CaseAction{    
+      
+    //Adding Creator of Case under Case Team member related list of Cases, when case created 
+    //and assigning Dvp2_CaseReadWriteRole as Case team member role  
+    public static void createCaseTeamMemberRole( List<Case> newlistCases){
+        
+        final Id CaseForwardRecordTypeId = Schema.SObjectType.Case.RecordTypeInfosByName.get('Forward').RecordTypeId;
+        final Id CaseDirectRecordTypeId = Schema.SObjectType.Case.RecordTypeInfosByName.get('Direct').RecordTypeId;
+        final Id CaseRotaryRecordTypeId = Schema.SObjectType.Case.RecordTypeInfosByName.get('Rotary').RecordTypeId;
+        
+        final set<Id> setRecrordTypeId=new set<Id>{CaseForwardRecordTypeId,CaseDirectRecordTypeId,CaseRotaryRecordTypeId};
+        
+         CaseTeamRole instCaseTeamRole;
+        if(Test.isRunningTest()){
+            instCaseTeamRole = [SELECT id, Name FROM CaseTeamRole WHERE Name = 'Test Case Read-Only Role'];
+        }else{
+            instCaseTeamRole = [SELECT id, Name FROM CaseTeamRole WHERE Name = 'Case Read-Only Role'];
+        }
+        //CaseTeamRole instCaseTeamRole = [SELECT id, Name FROM CaseTeamRole WHERE Name = 'Case Read-Only Role'];
+        
+        List<CaseTeamMember> listCaseTeamMem = new List<CaseTeamMember>();
+        
+        for(case instcase: newlistCases){
+        
+            if(setRecrordTypeId.contains(instcase.RecordTypeId)){
+                CaseTeamMember instCaseTeamMem = new CaseTeamMember();
+                
+                //Assign case creator as member
+                instCaseTeamMem.ParentId = instcase.Id;
+                instCaseTeamMem.MemberId = instcase.CreatedById;
+                instCaseTeamMem.TeamRoleId = instCaseTeamRole.Id;       
+                
+                listCaseTeamMem.add(instCaseTeamMem);
+            }
+         }    
+         
+         //Check if list is not empty and insert
+                 
+            if(!listCaseTeamMem .isEmpty()){
+                
+            insert listCaseTeamMem;   
+            }
+    } 
+    
+    /*Method to update the Created Date on Case*/
+    /*[8-Dec-2017 Varun Sharma] - Added Code to Assign Case to HD Queue when Case type is Set to Heavy Duty*/
+    
+    public static void populateCreatedDateOnCase( List<Case> newCases){
+
+        final Id CaseForwardRecordTypeId = Schema.SObjectType.Case.RecordTypeInfosByName.get('Forward').RecordTypeId;
+        final Id CaseDirectRecordTypeId = Schema.SObjectType.Case.RecordTypeInfosByName.get('Direct').RecordTypeId;
+        final Id CaseRotaryRecordTypeId = Schema.SObjectType.Case.RecordTypeInfosByName.get('Rotary').RecordTypeId;
+        
+        final set<Id> setRecordTypeId=new set<Id>{CaseForwardRecordTypeId,CaseDirectRecordTypeId,CaseRotaryRecordTypeId};
+        
+        final String CaseHDQueue = Label.Dvp2_HeavyDutyQueue;
+        final String CaseServAllQueue = Label.Dvp2_ServAll_Queue;
+        final String CaseNonServAllQueue = Label.Dvp2_NonServAll_Queue;
+        final String CaseWheelServiceQueue = Label.Dvp2_WheelService_Queue;
+        
+        final Id HDQueueId = [Select Id from Group where Type = 'Queue' and DeveloperName = :CaseHDQueue].Id;
+        final Id ServAllQueueId = [Select Id from Group where Type = 'Queue' and DeveloperName = :CaseServAllQueue].Id;
+        final Id NonServAllQueueId = [Select Id from Group where Type = 'Queue' and DeveloperName = :CaseNonServAllQueue].Id;
+        final Id WheelServiceQueueId = [Select Id from Group where Type = 'Queue' and DeveloperName = :CaseWheelServiceQueue].Id;
+        
+        for(Case instCase: newCases){
+        
+            if(setRecordTypeId.contains(instcase.RecordTypeId)){
+                
+                //Populate Custom Created Date & Modified Date on Before Insert
+                instCase.Dvp2_Created_Date_Custom__c = System.now();
+                instCase.Dvp2_Last_Modified_Date_Custom__c = System.now();          
+                
+                //To Assign Case to Serv All Queue
+                if(instCase.Type == 'Serv-All' && !(instCase.Dvp2_Case_Inspections__c)){
+                    instCase.OwnerId = ServAllQueueId;
+                }
+                
+                //To Assign Case to Non ServAll Queue       
+                if(instCase.Type == 'Non-ServAll'){
+                    instCase.OwnerId = NonServAllQueueId;
+                }
+                
+                //To Assign Case to Heavy Duty Queue
+                if(instCase.Type == 'Heavy Duty' && !(instCase.Dvp2_Case_Inspections__c)){
+                    instCase.OwnerId = HDQueueId;
+                }               
+                
+                //To Assign Case to Wheel Service Queue
+                if(instCase.Type == 'Wheel Service' && !(instCase.Dvp2_Case_Inspections__c)){
+                    instCase.OwnerId = WheelServiceQueueId;
+                }
+                
+                
+            } //End Of If
+        }
+
+}
+
+    
+    //Method to: Case can be Closed only when all its related Work Orders are marked as Completed.
+    public static void checkWOStatus( List<Case> newCase, Map<ID, Case> newCaseMap , Map<ID, Case> oldCaseMap){
+    
+        final Id CaseForwardRecordTypeId = Schema.SObjectType.Case.RecordTypeInfosByName.get('Forward').RecordTypeId;
+        final Id CaseDirectRecordTypeId = Schema.SObjectType.Case.RecordTypeInfosByName.get('Direct').RecordTypeId;
+        final Id CaseRotaryRecordTypeId = Schema.SObjectType.Case.RecordTypeInfosByName.get('Rotary').RecordTypeId;
+        
+        final set<Id> setRecrordTypeId=new set<Id>{CaseForwardRecordTypeId,CaseDirectRecordTypeId,CaseRotaryRecordTypeId};
+        
+        //Iterting through cases
+        for(Case instCase: newCase){
+        
+        //To update the Custom Last Modified Date to Current Date Time, Runs on Before Update
+        instCase.Dvp2_Last_Modified_Date_Custom__c = System.Now();
+        System.debug('Custom Field'+instCase.Dvp2_Last_Modified_Date_Custom__c+'Standard Field'+instCase.LastModifiedDate);
+            
+            if(setRecrordTypeId.contains(instcase.RecordTypeId) && newCaseMap.get(instCase.id).status != oldCaseMap.get(instCase.id).status && newCaseMap.get(instCase.id).status == 'Closed' ){
+            integer statussize = 0; 
+            List<WorkOrder> listWO = [select id, status, Dvp2_GrandTotal__c, CaseId from WorkOrder where CaseId = : instCase.id];
+            
+                for(WorkOrder instWO: listWO){
+                    if(instWO.status == 'completed'){
+                        
+                        statussize = statussize + 1;
+                    }      
+                } //End of For
+                
+            if(listWO.size() != statussize){
+            
+                instCase.addError('Case can not be closed if all its Work Orders are not completed');
+            }
+            } //End Of If
+        
+        } // End Of For
+    }
+    
+    public static void CreateNewWorkOrder(final List<Case> newCase){
+    
+        if(Dvp2_checkRecursive.runOnce()){
+        
+            final Id CaseForwardRecordTypeId = Schema.SObjectType.Case.RecordTypeInfosByName.get('Forward').RecordTypeId;
+            final Id CaseDirectRecordTypeId = Schema.SObjectType.Case.RecordTypeInfosByName.get('Direct').RecordTypeId;
+            final Id CaseRotaryRecordTypeId = Schema.SObjectType.Case.RecordTypeInfosByName.get('Rotary').RecordTypeId;
+            final List<PriceBook2> StandardPriceBookId = [Select Id from PriceBook2 where isStandard = true];
+            
+            final String CaseSubTypeLitRequest = Label.Dvp2_Case_SubType_Literature_Request;
+            final String CaseSubTypeRGA = Label.Dvp2_Case_SubType_Return_Good_Authorization;
+            final String CaseSubTypeIncident = Label.Dvp2_Case_Sub_Type_Incident;
+                                    
+            List<WorkOrder> listOfWorkOrder = new List<WorkOrder>();
+            List<Case> listOfCase = new List<Case>();
+            Set<id> setaccountId=new Set<Id>();
+            Map<Id,Account> mapAccountId=new Map<Id,Account>();
+            
+                for(Case instOfCase: newCase){
+                     setaccountId.add(instOfCase.AccountID);
+                     System.debug('Value of setaccountId'+setaccountId);
+                                         
+                }  
+                for(Account instAcc:[select id,Name,Dvp2_RAI_Account__c,Type from Account where Id IN :setaccountId]){
+                     mapAccountId.put(instAcc.id,instAcc);
+                    System.debug('Value of setaccountId1'+instAcc);
+                }
+                
+                for(Case instOfCase:newCase){
+                        
+                        try{
+                    
+                            if(instOfCase.RecordTypeId==CaseForwardRecordTypeId || instOfCase.RecordTypeId==CaseDirectRecordTypeId || instOfCase.RecordTypeId==CaseRotaryRecordTypeId){
+                                                                                              
+                                
+                                 // To handle rest all other case scenarios
+                                if(!instOfCase.Dvp2_Case_Inspections__c && (instOfCase.Dvp2_Sub_Type__c !=CaseSubTypeLitRequest && instOfCase.Dvp2_Sub_Type__c !=CaseSubTypeRGA && instOfCase.Dvp2_Sub_Type__c !=CaseSubTypeIncident)){        
+                                    System.debug('@@Inside Case + Work Order@@');
+                                    WorkOrder instOfWorkOrder = new WorkOrder();
+                                    instOfWorkOrder.CaseId = instOfCase.Id;
+                                    instOfWorkOrder.AccountId = instOfCase.AccountId;
+                                    instOfWorkOrder.Dvp2_WorkOrderCreatedDirectly__c = true; // To Set the Flag=True whenever WO is created from Case 
+                                                                    
+                                    listOfWorkOrder.Add(instOfWorkOrder);
+                                }
+                                else if(instOfCase.Dvp2_Case_Inspections__c){
+                                    
+                                    WorkOrder instOfWorkOrder = new WorkOrder();
+                                    instOfWorkOrder.CaseId = instOfCase.Id;
+                                    instOfWorkOrder.AccountId = instOfCase.AccountId;
+                                    instOfWorkOrder.Dvp2_WorkOrderCreatedDirectly__c = true; // To Set the Flag=True whenever WO is created from Case
+
+                                    System.debug('value of mapAccountId'+mapAccountId);
+                                    instOfWorkOrder.Dvp2_RAI_Account__c=mapAccountId.containsKey(instOfCase.AccountId)?mapAccountId.get(instOfCase.AccountId).Dvp2_RAI_Account__c:null;
+                                    
+                                    listOfWorkOrder.add(instOfWorkOrder); 
+                                    
+                                    
+                                }
+                                else{
+                                System.debug('Inside Literature request or Return Good Authorization');
+                                } 
+                            }
+                        
+                        }
+                   
+                        Catch(Exception e){
+                            ApexPages.addMessage(new ApexPages.Message(ApexPages.Severity.ERROR,e.getMessage()));
+                            
+                        }
+                        
+                }       
+                if(!listOfWorkOrder.isEmpty()){
+                    insert listOfWorkOrder;
+                }
+                
+                
+                if(!listOfCase.isEmpty()){
+                  insert listOfCase;
+                }
+        }
+  
+    }
+    
+/*  Added By Varun
+    Desc:  This Method is used to populate GL Number on Case for various chief record types based on the Area, Category & Issue values entered on Case
+    Parameter: List of Cases
+    Return :void
+    Part of Phase 2 Implementation and call by case trigger handler on before insert & before update.
+*/  
+    
+    public static void populateGLNumberChiefCase(List<Case> newCases){
+
+    final Id CaseChiefRecordTypeId = Schema.SObjectType.Case.RecordTypeInfosByName.get('Chief').RecordTypeId;
+    final Id CaseChiefLockedRecordTypeId = Schema.SObjectType.Case.RecordTypeInfosByName.get('Chief Case Locked').RecordTypeId;
+    final Id CaseChiefReopenRecordTypeId = Schema.SObjectType.Case.RecordTypeInfosByName.get('Chief Reopen').RecordTypeId;
+            
+    final set<Id> setRecordTypeId=new set<Id>{CaseChiefRecordTypeId,CaseChiefLockedRecordTypeId,CaseChiefReopenRecordTypeId};
+
+    Map<string,string> mapAreaCatIssueGLCode= new Map<string,string>();
+        
+        
+        
+        for(Dvp2_Chief_GL_Number__c GLCode :  Dvp2_Chief_GL_Number__c.getall().values()){
+            
+            mapAreaCatIssueGLCode.put(GLCode.Dvp2_Area__c+''+GLCode.Dvp2_Category__c+''+GLCode.Dvp2_Issue__c,GLCode.Dvp2_Chief_GL_Number__c); 
+            
+        }
+        
+        for(Case instOfCase:newCases ){
+        
+            if(setRecordTypeId.contains(instOfCase.RecordTypeId) && mapAreaCatIssueGLCode.containsKey(instOfCase.Area__c+''+instOfCase.Category__c+''+instOfCase.Issue__c)){
+                instOfCase.Dvp2_GL_Number__c = mapAreaCatIssueGLCode.get(instOfCase.Area__c+''+instOfCase.Category__c+''+instOfCase.Issue__c) ==null?mapAreaCatIssueGLCode.get(instOfCase.Area__c+''+instOfCase.Category__c+''+instOfCase.Issue__c).replace('null',''):mapAreaCatIssueGLCode.get(instOfCase.Area__c+''+instOfCase.Category__c+''+instOfCase.Issue__c);
+            } //end of if   
+            else{
+                instOfCase.Dvp2_GL_Number__c ='';
+            }            
+        } //end of for
+
+    }
+
+/*  Added By Varun
+    Desc:  This Method is used to copy Labor & Mileage rates on Case from the Account's Parent Account
+    Parameter: List of Cases
+    Return :void
+    Part of Phase 2 Implementation and call by case trigger handler on before insert & before update.
+*/      
+    
+    public static void AutoPopulateLaborMileageCharge(List<Case> listCase){
+    
+        final Id CaseForwardRecordTypeId = Schema.SObjectType.Case.RecordTypeInfosByName.get('Forward').RecordTypeId;
+        final Id CaseDirectRecordTypeId = Schema.SObjectType.Case.RecordTypeInfosByName.get('Direct').RecordTypeId;
+        final Id CaseRotaryRecordTypeId = Schema.SObjectType.Case.RecordTypeInfosByName.get('Rotary').RecordTypeId; 
+        
+        final set<Id> setRecordTypeId = new set<Id>{CaseForwardRecordTypeId,CaseDirectRecordTypeId,CaseRotaryRecordTypeId};
+
+        Map<Id,Account> mapParentAccount=new Map<Id,Account>();
+        Map<Id,Id> parChildMap = new Map<Id,Id>();
+        Set<ID> setChildAccount=new Set<ID>();
+        Set<ID> setParAccIds = new Set<ID>();
+         
+            System.debug('@@##Inside AutoPopulateLaborMileageCharge of Case');
+                for(Case instOfCase:listCase){
+                    setChildAccount.add(instOfCase.AccountId);
+                    System.debug('@@##Child Accounts'+instOfCase);
+                    System.debug('@@##Child Accounts'+setChildAccount);
+                } //End of for
+                
+                for(Account instAccount:[Select ParentId from Account where Id IN: setChildAccount ]){
+                    setParAccIds.add(instAccount.ParentId);
+                    parChildMap.put(instAccount.Id, instAccount.ParentId);
+                    System.debug('@@##Parent Accounts'+setParAccIds);
+                } //End of for
+                                
+                                
+                for(Account instAccount:[select Id,Dvp2_Labor_Amount__c,Dvp2_Mileage_Amount__c from Account where Id IN:setParAccIds]){
+                    mapParentAccount.put(instAccount.id,instAccount);
+                    System.debug('value of instAccount'+instAccount.Id);
+                    System.debug('value of mapParentAccount'+mapParentAccount);
+                } //End of for
+
+                for(Case instOfCase:listCase){
+                
+                    Id parAccId = parChildMap.get(instOfCase.AccountId);
+                    
+                    if(setRecordTypeId.contains(instOfCase.RecordTypeId)&& parAccId !=null && mapParentAccount.containsKey(parAccId )){
+                        instOfCase.Dvp2_Account_Hourly_Labor_Rate__c = mapParentAccount.get(parAccId).Dvp2_Labor_Amount__c!=null?mapParentAccount.get(parAccId).Dvp2_Labor_Amount__c:0;
+                        instOfCase.Dvp2_Account_Hourly_Mileage_Rate__c = mapParentAccount.get(parAccId).Dvp2_Mileage_Amount__c!=null?mapParentAccount.get(parAccId).Dvp2_Mileage_Amount__c:0;                       
+                    }
+                    
+                    else if (setRecordTypeId.contains(instOfCase.RecordTypeId) && parAccId ==null){
+                        instOfCase.Dvp2_Account_Hourly_Labor_Rate__c=0;
+                        instOfCase.Dvp2_Account_Hourly_Mileage_Rate__c=0;                   
+                    }
+                   
+               } //End of for
+
+    }
+    
+/*
+Method: PopulateCreditDebitMemo
+Desc:  To Query the Credit-Debit Memo Number(text fields) present on Case, in Memo Object and then populate back the Credit-Debit Memo Number Lookup 
+        fields on Case with the MemoId.     
+*/  
+       
+        public static void PopulateCreditDebitMemo(List<Case> newCases){
+        
+            final Id CaseForwardRecordTypeId = Schema.SObjectType.Case.RecordTypeInfosByName.get('Forward').RecordTypeId;
+            final Id CaseDirectRecordTypeId = Schema.SObjectType.Case.RecordTypeInfosByName.get('Direct').RecordTypeId;
+            final Id CaseRotaryRecordTypeId = Schema.SObjectType.Case.RecordTypeInfosByName.get('Rotary').RecordTypeId; 
+            
+            final Set<Id> setRecordTypeId = new Set<Id>{CaseForwardRecordTypeId,CaseDirectRecordTypeId,CaseRotaryRecordTypeId};
+        
+            Set<Decimal> setOfCreditMemoNum = new Set<Decimal>(); //Set for filtering Credit Memo Numbers for incoming Cases
+            Set<Decimal> setOfDebitMemoNum = new Set<Decimal>(); //Set for filtering Debit Memo Numbers for incoming Cases
+            Map<Decimal,Id>  mapOfASMemoNumCrAndId =new Map<Decimal,Id>();//Map of AS Memo Number(Credit) and its Corresponding SFDC Id in Memo Object
+            Map<Decimal,Id>  mapOfASMemoNumDrAndId =new Map<Decimal,Id>();//Map of AS Memo Number(Debit) and its Corresponding SFDC Id in Memo Object
+
+            for(Case instOfCase : newCases){
+                if(setRecordTypeId.contains(instOfCase.RecordTypeId) && instOfCase.Dvp2_Credit_Memo_Number__c !=null){
+                    Decimal creditToDecimal = Decimal.valueOf(instOfCase.Dvp2_Credit_Memo_Number__c);
+                    setOfCreditMemoNum.add(creditToDecimal);
+                } //End of if
+                
+                if(setRecordTypeId.contains(instOfCase.RecordTypeId) && instOfCase.Dvp2_Debit_Memo_Number__c !=null){
+                    Decimal debitToDecimal = Decimal.valueOf(instOfCase.Dvp2_Debit_Memo_Number__c);
+                    setOfDebitMemoNum.add(debitToDecimal);
+                } //End of if
+            }
+
+            List<Dvp2_Memo__c> lstOfCreditMemo = [Select Id, Dvp2_AS_Memo_Number__c from Dvp2_Memo__c where Dvp2_Memo_Type__c = 'C' and Dvp2_AS_Memo_Number__c IN: setOfCreditMemoNum];
+            List<Dvp2_Memo__c> lstOfDebitMemo = [Select Id, Dvp2_AS_Memo_Number__c from Dvp2_Memo__c where Dvp2_Memo_Type__c = 'D' and Dvp2_AS_Memo_Number__c IN: setOfDebitMemoNum];
+
+            //To create a Map of Memo Number & corresponding Memo SFDC Id(Cr)
+            for(Dvp2_Memo__c instOfMemo:lstOfCreditMemo){
+                mapOfASMemoNumCrAndId.put(instOfMemo.Dvp2_AS_Memo_Number__c,instOfMemo.Id);
+            } //End of for
+            
+            //To create a Map of Memo Number & corresponding Memo SFDC Id(Dr)
+            for(Dvp2_Memo__c instOfMemo:lstOfDebitMemo){
+                mapOfASMemoNumDrAndId.put(instOfMemo.Dvp2_AS_Memo_Number__c,instOfMemo.Id);
+            } //End of for
+
+            //To retrieve values from Map and update Case
+            for(Case instOfCase : newCases){
+                if(setRecordTypeId.contains(instOfCase.RecordTypeId) && instOfCase.Dvp2_Credit_Memo_Number__c !=null){
+                    Decimal creditToDecimal = Decimal.valueOf(instOfCase.Dvp2_Credit_Memo_Number__c);
+                    
+                    //Updating the Credit Memo lookup field on the Case
+                    if(mapOfASMemoNumCrAndId.containsKey(creditToDecimal)){
+                        instOfCase.Dvp2_Credit_Memo__c = mapOfASMemoNumCrAndId.get(creditToDecimal);
+                    } //End of If
+                    else{
+                        instOfCase.Dvp2_Credit_Memo__c = null;
+                    } //End of else
+                    
+                } //End of outer If
+                
+                else{
+                    instOfCase.Dvp2_Credit_Memo__c =null;
+                }
+
+            } //End of for
+            
+            //To retrieve values from Map and update Case
+            for(Case instOfCase : newCases){
+                if(setRecordTypeId.contains(instOfCase.RecordTypeId) && instOfCase.Dvp2_Debit_Memo_Number__c !=null){
+                    Decimal debitToDecimal = Decimal.valueOf(instOfCase.Dvp2_Debit_Memo_Number__c);
+                    
+                    //Updating the Debit Memo lookup field on the Case
+                    if(mapOfASMemoNumDrAndId.containsKey(debitToDecimal)){
+                        instOfCase.Dvp2_Debit_Memo__c = mapOfASMemoNumDrAndId.get(debitToDecimal);
+                    } //End of If
+                    else{
+                        instOfCase.Dvp2_Debit_Memo__c = null;
+                    }
+                    
+                } //End of outer If
+                
+                else{
+                    instOfCase.Dvp2_Debit_Memo__c =null;
+                }
+
+            } //End of for
+        
+        }
+
+
+
+
+
+   
+}
