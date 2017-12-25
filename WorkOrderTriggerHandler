@@ -1,0 +1,64 @@
+/*
+Name:            Dvp2_WorkOrderTriggerHandler
+Purpose:         Handler class for the Case Action class
+Author:          Varun Sharma
+Created Date:    Aug 6th 2017  
+
+Version       Modified By                     Modified Date
+1.0           Varun Sharma                    Aug 6th 2017
+*/
+
+public with sharing class Dvp2_WorKOrderTriggerHandler
+{
+    @TestVisible private boolean m_isExecuting = false;
+    @TestVisible private integer BatchSize = 0;
+
+    public Dvp2_WorKOrderTriggerHandler(boolean isExecuting , integer size)
+    {
+        m_isExecuting=isExecuting;
+        BatchSize=size;
+    }
+    
+   public void OnBeforeInsert(List<WorkOrder> newWorkOrders)
+    {
+        Dvp2_WorkOrderAction.populateStandardPriceBookOnWorkOrder(newWorkOrders);
+        Dvp2_WorkOrderAction.autopopulateLaborMileagecharge(newWorkOrders);
+        Dvp2_WorkOrderAction.updateGLNumberNewWO(newWorkOrders);
+        Dvp2_WorkOrderAction.InsertInvoiceNoOnCase(newWorkOrders);
+        system.debug('Lead Trigger On Before Insert');
+        
+    }
+    
+    public void OnBeforeUpdate( List<WorkOrder> newWorkOrder, List<WorkOrder> oldWorkOrder, Map<ID,WorkOrder> newWorkOrderMap , Map<ID,WorkOrder> oldWorkOrderMap)
+    {
+        system.debug('Lead Trigger On Before Update');
+
+        Dvp2_WorkOrderAction.updateGLNumberNewWO(newWorkOrder);
+        Dvp2_WorkOrderAction.updateLaborMileagecharge(newWorkOrder,newWorkOrderMap,oldWorkOrderMap);
+        
+    }
+    
+    public void OnAfterDelete(List<WorkOrder> oldWorkOrders)
+    {
+        Dvp2_WorkOrderAction.updateCaseGrandTotal(oldWorkOrders);
+        Dvp2_WorkOrderAction.TotalWOLaborMileage(oldWorkOrders);
+
+        system.debug('after delete : WorkOrder handler');
+    }
+    
+    public void OnAfterUpdate(List<WorkOrder> newWorkOrders,Map<ID,WorkOrder> newWorkOrderMap , Map<ID,WorkOrder> oldWorkOrderMap)
+    {        
+        system.debug('after update: WorkOrder handler');
+        Dvp2_WorkOrderAction.updateCaseGrandTotal(newWorkOrders);
+        Dvp2_WorkOrderAction.TotalWOLaborMileage(newWorkOrders);
+        Dvp2_WorkOrderAction.createCaseTeamMemOnWOUpdate(newWorkOrders,newWorkOrderMap ,oldWorkOrderMap );
+        Dvp2_WorkOrderAction.updateInvoiceNoOnCase(newWorkOrders,newWorkOrderMap,oldWorkOrderMap);
+    }
+    
+    public void OnAfterInsert(List<WorkOrder> newWorkOrders)
+    {
+        Dvp2_WorkOrderAction.createCaseTeamMemOnWOInsert(newWorkOrders);
+        Dvp2_WorkOrderAction.updateCaseGrandTotal(newWorkOrders);
+        Dvp2_WorkOrderAction.TotalWOLaborMileage(newWorkOrders);
+    }
+}
