@@ -1,0 +1,632 @@
+/*
+Name:            Dvp2_WorkOrderAction
+Purpose:         This class is created to update Work Order owner on Update
+Author:          Varun Sharma
+Created Date:    Aug 6th 2017  
+
+Version       Modified By                     Modified Date
+1.0           Varun Sharma                    Aug 6th 2017
+2.0           Neha Pandey                     Sep 18th 2017
+3.0           Sudeepthi                       Sep 22nd 2017
+4.0           Varun                           Dec 15th 2017 
+*/
+
+public without sharing class Dvp2_WorkOrderAction{
+
+    /*
+    Method: updateCaseGrandTotal
+    Desc: This method is used to add all Grand Total of all Work Orders of a Case & populate Grand Total of Case.
+    */
+    public static void updateCaseGrandTotal(List<WorkOrder> newWorkOrder){
+
+        set<Id> setCaseIds = new set<Id>();
+        List<Case> listCases = new List<Case>();
+        //List<Case> listCasesToUpdate = new List<Case>();
+
+
+        for(WorkOrder instWO : newWorkOrder){
+            
+            if(instWO.CaseId!=null){
+                setCaseIds.add(instWO.CaseId);
+            }
+            
+        }
+
+
+        //New Code Starts Here
+        Map<String,double> mapAggResult=new Map<String,double>();
+        for(AggregateResult instAggResult:[select caseid caseId,sum(Dvp2_GrandTotal__c) grandtotal from workorder where caseId IN :setCaseIds group by caseId having caseId IN :setCaseIds ]){
+            
+            mapAggResult.put(String.valueOf(instAggResult.get('caseid')),double.valueOF(instAggResult.get('grandtotal')));
+            System.debug('Map'+mapAggResult);
+        }
+
+        for(Case instOfCase:[select id, Dvp2_Case_Grand_Total__c from case where id  IN :setCaseIds]){
+            
+            instOfCase.Dvp2_Case_Grand_Total__c = mapAggResult.get(instOfCase.Id);
+            instOfCase.Dvp2_Case_Grand_Total__c=instOfCase.Dvp2_Case_Grand_Total__c==null?0:instOfCase.Dvp2_Case_Grand_Total__c;
+            listCases.add(instOfCase);
+        }  
+
+        update listCases;
+        //New Code Ends Here
+
+        
+    }
+    
+    /*
+    Method: TotalWOLaborMileage
+    Desc: To sum total Labor & Mileage of each Work Order and then populate that on the Case
+    */
+    public static void TotalWOLaborMileage(List<WorkOrder> newWorkOrder){
+        List<Case> listCases = new List<Case>();
+        Set<Id> setCaseIds = new Set<Id>();
+        
+            for(WorkOrder wo:newWorkOrder){
+                if(wo.CaseId !=null){
+                    setCaseIds.add(wo.CaseId);
+                }
+            }
+        
+                    
+            for(Case instOfCase:[SELECT Id,Dvp2_Net_Labor_Hours__c,Dvp2_Net_Mileage__c,
+                                   (SELECT Id,CaseId,AccountId,Dvp2_Mileage__c,Dvp2_Mileage_Overriden__c,Dvp2_Labor_Hours__c,Dvp2_Labor_Hours_Overriden__c FROM WorkOrders) 
+                                        FROM Case WHERE Id IN: setCaseIds]){
+                
+                Double laborval=0;
+                Double mileageval=0;
+                
+                for(WorkOrder instOfWO: instOfCase.WorkOrders){
+                
+                instOfWO.Dvp2_Labor_Hours__c =instOfWO.Dvp2_Labor_Hours__c!=null?instOfWO.Dvp2_Labor_Hours__c:0;
+                instOfWO.Dvp2_Mileage__c =instOfWO.Dvp2_Mileage__c!=null?instOfWO.Dvp2_Mileage__c:0;
+                
+                    if(instOfWO.CaseId !=null && instOfWO.AccountId !=null){    
+                        laborval+=instOfWO.Dvp2_Labor_Hours_Overriden__c!=null?instOfWO.Dvp2_Labor_Hours_Overriden__c:instOfWO.Dvp2_Labor_Hours__c;
+                        mileageval+=instOfWO.Dvp2_Mileage_Overriden__c!=null?instOfWO.Dvp2_Mileage_Overriden__c:instOfWO.Dvp2_Mileage__c;
+                    }
+
+                }
+                
+            instOfCase.Dvp2_Net_Labor_Hours__c = laborval;  
+            instOfCase.Dvp2_Net_Mileage__c = mileageval;
+            
+            System.debug('@@##Labor'+instOfCase.Dvp2_Net_Labor_Hours__c);
+            System.debug('@@##Mileage'+instOfCase.Dvp2_Net_Mileage__c);
+            
+            listCases.add(instOfCase);
+            }
+            update listCases;
+    }       
+    
+    
+    /*
+    Method: populateStandardPriceBookOnWorkOrder
+    Desc: This Method to populate just the System information for all the Work Orders
+    */
+    public static void populateStandardPriceBookOnWorkOrder( List<WorkOrder> newWorkOrders){
+ 
+    final Id workOrderRecordTypeId = Schema.SObjectType.WorkOrder.RecordTypeInfosByName.get('VSG Work Order').RecordTypeId;
+      /*ID pricebookId;
+    
+        if(!Test.isRunningTest()){
+        final List<PriceBook2> StandardPriceBookId = [Select Id from PriceBook2 where isStandard = true]; 
+         pricebookId=StandardPriceBookId[0].id;
+        
+        }
+        else{
+            
+            pricebookId=Test.getStandardPricebookId();
+        } */     
+        for(WorkOrder instOfWorkOrder:newWorkOrders){ 
+        
+            if( instOfWorkOrder.RecordTypeId==workOrderRecordTypeId ){ 
+            
+            //instOfWorkOrder.PriceBook2Id = pricebookId; 
+            instOfWorkOrder.Dvp2_Created_Date_Custom__c = System.now();
+            instOfWorkOrder.Dvp2_Last_Modified_Date_Custom__c = System.now();   
+            }
+        }  
+    }
+
+    /*
+    Method: createCaseTeamMemOnWOInsert
+    Desc: Method to create Case Team Member role when Work Order is inserted
+    */
+    public static void createCaseTeamMemOnWOInsert(List<WorkOrder> newWorkOrder){
+        
+        set<Id> setCaseIds = new set<Id>();
+        List<Case> listCases = new List<Case>();
+        Map<Id, CaseTeamMember> mapCaseTeamMemIDs = new Map<Id, CaseTeamMember>();
+        
+        final Id CaseForwardRecordTypeId = Schema.SObjectType.Case.RecordTypeInfosByName.get('Forward').RecordTypeId;
+        final Id CaseDirectRecordTypeId = Schema.SObjectType.Case.RecordTypeInfosByName.get('Direct').RecordTypeId;
+        final Id CaseRotaryRecordTypeId = Schema.SObjectType.Case.RecordTypeInfosByName.get('Rotary').RecordTypeId;
+            
+        final set<Id> setRecrordTypeId=new set<Id>{CaseForwardRecordTypeId,CaseDirectRecordTypeId,CaseRotaryRecordTypeId};
+
+        for(WorkOrder instWO : newWorkOrder){
+
+        setCaseIds.add(instWO.CaseId);
+
+        }
+
+        for(Case instCase1: [select id, RecordTypeId,OwnerId from Case where Id In : setCaseIds]){
+
+        listCases.add(instCase1);   
+        }
+        CaseTeamRole instCaseTeamRole;
+        if(Test.isRunningTest()){
+            instCaseTeamRole = [SELECT id, Name FROM CaseTeamRole WHERE Name = 'Test Case Read-Only Role'];
+        }else{
+            instCaseTeamRole = [SELECT id, Name FROM CaseTeamRole WHERE Name = 'Case Read-Only Role'];
+        }
+       
+            
+        List<CaseTeamMember> listCaseTeamMemToUpdate = new List<CaseTeamMember>();
+        
+        for(CaseTeamMember instCaseTeamMemb:[select id, ParentId, MemberId from CaseTeamMember where ParentId In :setCaseIds ]){
+        
+            mapCaseTeamMemIDs.put(instCaseTeamMemb.MemberId ,instCaseTeamMemb);
+        }
+           
+        
+        set<Id> setCase2Ids = new set<Id>();
+        set<Id> setCase2OwnerIds = new set<Id>();
+        
+            for(Case instCase2: listCases){
+                setCase2Ids.add(instCase2.Id);
+                setCase2OwnerIds.add(instCase2.OwnerId);
+            }
+
+
+        Map<Id, List<WorkOrder>> mapCaseWorkOrder = new Map<Id, List<WorkOrder>>();
+        Map<Id, List<CaseTeamMember>> mapCaseAndCaseTeamMember = new Map<Id, List<CaseTeamMember>>();
+        
+        for(WorkOrder instWo:[select id, OwnerId, CaseId from WorkOrder where CaseId IN :setCase2Ids]){
+        
+            if(mapCaseWorkOrder.containsKey(instWo.CaseId)){
+                mapCaseWorkOrder.get(instWo.CaseId).add(instWo);
+            }else{
+                mapCaseWorkOrder.put(instWo.CaseId,new List<workorder>{instWo});
+            }
+        }
+        
+        for(CaseTeamMember instCaseTeamMember:[Select ParentId, MemberId from CaseTeamMember where ParentId IN :setCase2Ids and MemberId IN :setCase2OwnerIds]){
+            
+            if(mapCaseAndCaseTeamMember.containsKey(instCaseTeamMember.ParentId)){
+                mapCaseAndCaseTeamMember.get(instCaseTeamMember.ParentId).add(instCaseTeamMember);
+            }else{
+                mapCaseAndCaseTeamMember.put(instCaseTeamMember.ParentId,new List<CaseTeamMember>{instCaseTeamMember});
+            }
+        
+        }
+        
+        
+        for(Case instCase2: listCases){
+
+            
+            if(mapCaseWorkOrder.containsKey(instCase2.id)){
+                
+                for(WorkOrder instWO: mapCaseWorkOrder.get(instCase2.id)){
+                
+                    if(setRecrordTypeId.contains(instcase2.RecordTypeId) &&  mapCaseAndCaseTeamMember.containskey(instCase2.id) && !mapCaseAndCaseTeamMember.get(instCase2.id).isEmpty()){
+                      
+                        CaseTeamMember instCaseTeamMem = new CaseTeamMember();
+                        
+                        instCaseTeamMem.ParentID = instCase2.id;
+                        instCaseTeamMem.MemberId = instWO.OwnerId;
+                        instCaseTeamMem.TeamRoleId = instCaseTeamRole.Id;       
+                        
+                        if(!mapCaseTeamMemIDs.containsKey(instWO.OwnerId)){
+                        
+                            listCaseTeamMemToUpdate.add(instCaseTeamMem);
+                        }
+                    }             
+                }   
+            }
+           
+        }
+            if(!listCaseTeamMemToUpdate.isEmpty()){
+        
+            insert listCaseTeamMemToUpdate;
+            }
+    }
+    /*
+      Method:updateInvoiceNoOnCase
+      Desc: Call on after update of workorder to populate Invoice Number.
+    */
+    public static void updateInvoiceNoOnCase(List<Workorder> newListWO,Map<Id,WorkOrder> newMapWO,Map<Id,WorkOrder> oldMapWO){
+       
+     
+        final Set<ID> setCaseId=new Set<Id>(); //add set of Case Ids from Work Order
+        final List<Case> listCaseUpdate=new List<case>();
+        Map<Id,String> mapcaseIdWo=new Map<Id,String>(); //to map Work order invoice # with case id
+        List<Case> listOfCase=new List<Case>(); //to save list of case where case invoice # is updated
+        Map<Id,List<WorkOrder>> mapCaseIdListWO= new Map<Id,List<WorkOrder>>(); // to map case id with list of work orders where invoice is populated
+        List<WorkOrder> lstOfWO = new List<WorkOrder>(); // for a caseid, to store list of work orders with invoice #
+        
+        //To add caseIds of Work Order to a Set
+        for(WorkOrder instWO:newListWO){
+            if(instWO.CaseId!=null){
+                if(newMapWO.get(instWO.id).Dvp2_Invoice__c!=oldMapWO.get(instWO.id).Dvp2_Invoice__c){
+                   
+                    setCaseId.add(instWO.CaseId);
+                }
+            }
+        } // end
+        
+        
+        if(!setCaseId.isEmpty()){
+                
+                listOfCase=[select Dvp2_Warranty_Invoice__c from case where id in :setCaseId];
+                
+                for(WorkOrder instWO: [select Dvp2_Invoice__c,caseId from workorder where caseId in :setCaseId and Dvp2_Invoice__c!=null order by createddate asc ]){
+                  
+                    //to add list of work orders with invoice numbers
+                    if(instWO.Dvp2_Invoice__c!=null){
+                        
+                        lstOfWO.add(instWO);
+                        mapCaseIdListWO.put(instWO.caseId,lstOfWO);
+                    }                   
+                    if(!mapcaseIdWo.containsKey(instWO.caseId)){
+                        mapcaseIdWo.put(instWO.caseId,instWO.Dvp2_Invoice__c);
+                    }
+                    
+                } // end of for
+        } // end of if
+        
+        //To throw error if invoice is entered in another work order
+        for(WorkOrder wo:newListWO ){
+            
+            System.debug('@@Map Size@@'+mapCaseIdListWO.size());
+            
+                if(mapCaseIdListWO.containsKey(wo.CaseId)){
+                
+                    if(mapCaseIdListWO.get(wo.CaseId).size() > 1){
+                        wo.addError('Invoice Number is already present in another Work Order of this Case');
+                    }   
+                                        
+                }
+        }//end of for
+        
+        
+        
+       
+        for(Case instCase:listOfCase){
+            
+            if(mapcaseIdWo.containsKey(instCase.id)){
+            
+                instCase.Dvp2_Warranty_Invoice__c=mapcaseIdWo.get(instCase.id);
+                listCaseUpdate.add(instCase);
+            }
+        }// end of loop
+        
+        if(!listCaseUpdate.isEmpty()){
+        
+            update listCaseUpdate;
+        }
+    }   
+    
+    /*
+      Method:InsertInvoiceNoOnCase
+      Desc: Call on before insert of workorder to populate Invoice Number if not present on any other work order.
+    */
+    public static void InsertInvoiceNoOnCase(List<Workorder> newListWO){
+            
+        final Set<ID> setCaseId=new Set<Id>(); //add set of Case Ids from Work Order
+        final List<Case> listCaseUpdate=new List<case>();
+        Map<Id,String> mapcaseIdWo=new Map<Id,String>(); //to map Work order invoice # with case id
+        List<Case> listOfCase=new List<Case>(); //to save list of case where case invoice # is updated
+        Map<Id,List<WorkOrder>> mapCaseIdListWO= new Map<Id,List<WorkOrder>>(); // to map case id with list of work orders where invoice is populated
+        List<WorkOrder> lst = new List<WorkOrder>(); //to store list of work orders of a given case
+        
+        //To add caseIds of Work Order to a Set
+        for(WorkOrder instWO:newListWO){
+                
+                if(instWO.CaseId!=null) {
+                    setCaseId.add(instWO.CaseId);
+                }           
+                
+                System.debug('@@Value of Set@@'+setCaseId);
+        } // end
+        
+        
+        if(!setCaseId.isEmpty()){
+                
+                listOfCase=[select Dvp2_Warranty_Invoice__c from case where id in :setCaseId];
+                
+                List<WorkOrder> woLst =[select Dvp2_Invoice__c,caseId from workorder where caseId in :setCaseId and Dvp2_Invoice__c!=null order by createddate asc];
+                
+                for(WorkOrder instWO: newListWO){
+                
+                    //To check if work orders are already present with Invoice# & the current instance of WorkOrder also has Invoice#
+                    if(!woLst.isEmpty()){
+                        instWO.addError('Invoice Number is already present in another Work Order of this Case');
+                    }           
+                    
+                    //To check if no Work Orders are present with Invoice# & new instance of Work Order has Invoice#
+                    else if(instWO.Dvp2_Invoice__c!=null){
+                    
+                        if(!mapcaseIdWo.containsKey(instWO.caseId)){
+                            mapcaseIdWo.put(instWO.caseId,instWO.Dvp2_Invoice__c);
+                        }
+                                                
+                    
+                    }   
+                
+                    
+                } // end of for
+        } // end of if
+        
+       
+        for(Case instCase:listOfCase){
+            
+            if(mapcaseIdWo.containsKey(instCase.id)){
+            
+                instCase.Dvp2_Warranty_Invoice__c=mapcaseIdWo.get(instCase.id);
+                listCaseUpdate.add(instCase);
+            }
+        }// end of loop
+        
+        if(!listCaseUpdate.isEmpty()){
+        
+            update listCaseUpdate;
+        }
+    }   
+    
+    /*
+    Method: createCaseTeamMemOnWOUpdate
+    Desc: Method to create Case Team Member role when Work Order is updated
+    */
+    public static void createCaseTeamMemOnWOUpdate(List<WorkOrder> newWorkOrder, Map<ID,WorkOrder> newWorkOrderMap , Map<ID,WorkOrder> oldWorkOrderMap)
+    {
+        Map<Id,list<WorkOrder>> caseWRMap = new Map<Id,list<WorkOrder>>(); //CaseId ===> list<WorkOrder>
+        set<Id> setCaseDELIds = new set<Id>();  // will be used to store Case Ids whose CaseTeamMember needs to be deleted.
+        set<Id> caseIds = new Set<Id>();
+        List<Case> listCases = new List<Case>();
+        Map<string, CaseTeamMember> mapCaseTeamMemIDs = new Map<string, CaseTeamMember>();  //UserId+CaseId ===> CaseTeamMember
+        //Map<Id,Set<Id>> caseWOOwnerIdMap = new Map<Id,Set<Id>>(); //CaseId ===> Set<WO OwnerIds>    
+      
+        List<CaseTeamMember> listCaseTeamMemToUpdate = new List<CaseTeamMember>();
+        List<CaseTeamMember> listCaseTeamMemToDelete = new List<CaseTeamMember>();
+
+        final Id CaseForwardRecordTypeId = Schema.SObjectType.Case.RecordTypeInfosByName.get('Forward').RecordTypeId;
+        final Id CaseDirectRecordTypeId  = Schema.SObjectType.Case.RecordTypeInfosByName.get('Direct').RecordTypeId;
+        final Id CaseRotaryRecordTypeId  = Schema.SObjectType.Case.RecordTypeInfosByName.get('Rotary').RecordTypeId;
+
+        final set<Id> setRecrordTypeId=new set<Id>{CaseForwardRecordTypeId,CaseDirectRecordTypeId,CaseRotaryRecordTypeId};
+
+        for(WorkOrder instWO : newWorkOrder)    {
+            caseIds.add( instWO.CaseId );       
+        
+            List<WorkOrder> wos = new List<WorkOrder>();
+            
+            if( caseWRMap.get( instWO.CaseId )==null ) {
+                wos.add( instWO );
+                caseWRMap.put( instWO.CaseId,wos );
+            }
+            else
+            {
+                wos = caseWRMap.get( instWO.CaseId );
+                wos.add( instWO );
+                caseWRMap.put( instWO.CaseId,wos );
+            }
+        }
+
+        for(Case instCase1: [select id, RecordTypeId from Case where Id In : caseWRMap.keySet()]){
+            listCases.add(instCase1);   
+        }
+
+       // CaseTeamRole instCaseTeamRole = [SELECT id, Name FROM CaseTeamRole WHERE Name = 'Case Read-Only Role'];
+        CaseTeamRole instCaseTeamRole;
+        if(Test.isRunningTest()){
+            instCaseTeamRole = [SELECT id, Name FROM CaseTeamRole WHERE Name = 'Test Case Read-Only Role'];
+        }else{
+            instCaseTeamRole = [SELECT id, Name FROM CaseTeamRole WHERE Name = 'Case Read-Only Role'];
+        }
+        
+        for(CaseTeamMember instCaseTeamMemb:[select id, ParentId, MemberId from CaseTeamMember where ParentId In :caseWRMap.keySet() ]) {
+            mapCaseTeamMemIDs.put(instCaseTeamMemb.MemberId+''+instCaseTeamMemb.ParentId ,instCaseTeamMemb);
+        }
+
+        //Iterting through cases, to add WO Owners as Case Team Members
+        for(Case instCase2: listCases)
+        {
+            for( WorkOrder instWO: caseWRMap.get(instCase2.Id) )
+            {
+                if( newWorkOrderMap.get(instWO.id).OwnerId != oldWorkOrderMap.get(instWO.id).OwnerId ) 
+                { 
+                    if( setRecrordTypeId.contains( instcase2.RecordTypeId ) )   
+                    {
+                        CaseTeamMember instCaseTeamMem = new CaseTeamMember();
+                        instCaseTeamMem.ParentID = instCase2.id;
+                        instCaseTeamMem.MemberId = instWO.OwnerId;
+                        instCaseTeamMem.TeamRoleId = instCaseTeamRole.Id;       
+                        
+                        system.debug('instWO.OwnerId instCase2.Id==='+instWO.OwnerId+''+instCase2.Id+'     '+mapCaseTeamMemIDs.KeySet());
+                        
+                        if( !mapCaseTeamMemIDs.containsKey( instWO.OwnerId+''+instCase2.Id ) )  {
+                            listCaseTeamMemToUpdate.add(instCaseTeamMem);   // adding CaseTeamMember for Insertion
+                        }
+                        
+                        setCaseDELIds.add( instCase2.id  ); // saving caseIds for later iteration and deletion.
+                    }
+                }             
+            } 
+        }
+
+        system.debug('setCaseDELIds==='+setCaseDELIds.size()+'  '+setCaseDELIds);
+
+       if( !setCaseDELIds.isEmpty() )
+        {       
+            //getting all associated WOs
+            list<WorkOrder> otherWOs = new list<WorkOrder>([SELECT Id,caseID,OwnerId FROM WORKORDER WHERE caseID in: caseIds AND Id not In:newWorkOrder ]);
+            
+            set<Id> teamMemberDelIds = new Set<Id>();
+            for( CaseTeamMember delCTM : [  SELECT Id,ParentID,MemberID FROM CaseTeamMember WHERE ParentID in:setCaseDELIds ] )
+            {
+                list<WorkOrder> wos = caseWRMap.get( delCTM.ParentID ); // getting respective wos using caseId
+                wos.addAll( otherWOs );
+                system.debug('setCaseDELIds==='+setCaseDELIds.size()+'  '+setCaseDELIds+'  '+wos);
+                
+                for( WorkOrder wo : wos ) {
+                    //Making sure WO Old ownerId is not null and Checking if CaseTeamMember user Id and Wo Old OwnerId is same
+                    if( oldWorkOrderMap.get( wo.ID )!=null && oldWorkOrderMap.get( wo.ID ).OwnerId!=null && oldWorkOrderMap.get( wo.ID ).OwnerId == delCTM.MemberID ) 
+                    {   
+                        teamMemberDelIds.add( delCTM.Id );
+                    } 
+                    if( wo.OwnerId == delCTM.MemberID )
+                        teamMemberDelIds.remove( delCTM.Id );
+                }    
+            }
+            system.debug('teamMemberDelIds==='+teamMemberDelIds);
+            if( !teamMemberDelIds.isEmpty() )   {
+            
+                listCaseTeamMemToDelete = [select id from CaseTeamMember where Id in:teamMemberDelIds ];
+                
+                system.debug('listCaseTeamMemToDelete==='+listCaseTeamMemToDelete.size()+'  '+listCaseTeamMemToDelete);
+                
+                if(!listCaseTeamMemToDelete.isEmpty())  {
+                    delete listCaseTeamMemToDelete;
+                }
+            }   
+        }
+
+        if(!listCaseTeamMemToUpdate.isEmpty())  {
+            insert listCaseTeamMemToUpdate;
+        }
+    }
+
+
+/*  Added By Neha
+    Desc:  This Method is used to autopopulateLaborMileagecharge on WorkOrder based upon the Selected RAI Account.
+    parameter: List of workOrder
+    return :void
+    Part of Phase 2 Implementation and call by case trigger handler on before insert.
+*/
+    public static void autopopulateLaborMileagecharge(List<workOrder> listWorkOrder){
+       
+                    Map<Id,Account> mapRAIAccount=new Map<Id,Account>();
+                    Set<ID> setRAIAccount=new Set<ID>();
+                    for(workorder instWO:listWorkOrder){
+                   
+                        setRAIAccount.add(instWO.dvp2_RAI_Account__C);
+                                   
+                    }
+                   
+                    for(Account instAccount:[select id,Dvp2_Labor_Amount__c,dvp2_RAI_Account__C,Dvp2_RAI_User__c,Dvp2_Mileage_Amount__c from Account where id in:setRAIAccount]){
+                      
+                       mapRAIAccount.put(instAccount.id,instAccount);
+                       System.debug('value of instAccount'+instAccount);
+                       System.debug('value of mapRAIAccount'+mapRAIAccount);
+                    }
+                   
+                    for(workorder instWO:listWorkOrder){
+                   
+                                    if(instWO.dvp2_RAI_Account__C!=null && mapRAIAccount.containsKey(instWO.dvp2_RAI_Account__C)){
+                                                   
+                                                    instWO.Dvp2_Account_Mileage_Amount__c=mapRAIAccount.containsKey(instWO.dvp2_RAI_Account__C)?mapRAIAccount.get(instWO.dvp2_RAI_Account__C).Dvp2_Mileage_Amount__c:null;
+                                                    instWO.Dvp2_Account_Hourly_Labor_Rate__c=mapRAIAccount.containsKey(instWO.dvp2_RAI_Account__C)?mapRAIAccount.get(instWO.dvp2_RAI_Account__C).Dvp2_Labor_Amount__c:null;
+                                                    instWo.OwnerId=mapRAIAccount.get(instWO.dvp2_RAI_Account__C).Dvp2_RAI_User__c;
+                                    }
+                                    
+                                    else if (instWO.dvp2_RAI_Account__C==null){
+                                         instWO.Dvp2_Account_Mileage_Amount__c=null;
+                                         instWO.Dvp2_Account_Hourly_Labor_Rate__c=null;
+                                    }
+                                    
+                                 
+                            
+                    }
+     
+    }
+    
+/* Added By Neha
+    Desc:  This Method is used to updateLaborMileagecharge on WorkOrder based upon the Selected RAI Account.
+    parameter: List of workOrder
+    return :void
+    Part of Phase 2 Implementation and call by case trigger handler on before update.
+*/
+    public static void updateLaborMileagecharge(List<workOrder> listWorkOrder,Map<ID,WorkOrder>newWorkOrderMap,Map<ID,WorkOrder> oldWorkOrderMap){
+       
+        Map<Id,Account> mapRAIAccount=new Map<Id,Account>();
+        Set<ID> setRAIAccount=new Set<ID>();
+        for(workorder instWO:listWorkOrder){
+            if(oldWorkOrderMap.get(instWO.id).dvp2_RAI_Account__C !=newWorkOrderMap.get(instWO.id).dvp2_RAI_Account__C){
+                setRAIAccount.add(instWO.dvp2_RAI_Account__C);
+                       
+            }
+        }
+        for(Account instAccount:[select id,Dvp2_Labor_Amount__c,dvp2_RAI_Account__C,Dvp2_RAI_User__c,Dvp2_Mileage_Amount__c from Account where id in:setRAIAccount]){
+          
+           mapRAIAccount.put(instAccount.id,instAccount);
+           System.debug('value of instAccount'+instAccount);
+           System.debug('value of mapRAIAccount'+mapRAIAccount);
+        }
+       
+        for(workorder instWO:listWorkOrder){
+       
+            if(instWO.dvp2_RAI_Account__C!=null && mapRAIAccount.containsKey(instWO.dvp2_RAI_Account__C)){
+                           
+                instWO.Dvp2_Account_Mileage_Amount__c=mapRAIAccount.containsKey(instWO.dvp2_RAI_Account__C)?mapRAIAccount.get(instWO.dvp2_RAI_Account__C).Dvp2_Mileage_Amount__c:null;
+                instWO.Dvp2_Account_Hourly_Labor_Rate__c=mapRAIAccount.containsKey(instWO.dvp2_RAI_Account__C)?mapRAIAccount.get(instWO.dvp2_RAI_Account__C).Dvp2_Labor_Amount__c:null;
+                instWo.OwnerId=mapRAIAccount.get(instWO.dvp2_RAI_Account__C).Dvp2_RAI_User__c;
+            }
+            else if (instWO.dvp2_RAI_Account__C==null){
+                instWO.Dvp2_Account_Mileage_Amount__c=null;
+                instWO.Dvp2_Account_Hourly_Labor_Rate__c=null;
+            }
+            
+            instWO.Dvp2_Last_Modified_Date_Custom__c = System.now();
+                      
+        }
+    }    
+    
+/*  Added By Varun:
+    Description: Method to auto populate the problem code from custom settings.
+    Then use problem code & lift code to calculate GL Number based on values in corresponding Custom settings. */
+    
+    public static void updateGLNumberNewWO(List<WorkOrder> newWorkOrders){
+    Map<string,string> mapProblemCompCode= new Map<string,string>();
+    Map<string,Dvp2_GLNumber_LiftCode__c> mapliftCode= new Map<string,Dvp2_GLNumber_LiftCode__c>();
+    Map<string,Dvp2_GLNumber_ProblemCode__c> mapProblemCode= new Map<string,Dvp2_GLNumber_ProblemCode__c>();
+    
+        
+        for(Dvp2_Problem_Code_Mapping__c pCompCode :  Dvp2_Problem_Code_Mapping__c.getall().values()){
+            
+        mapProblemCompCode.put(pCompCode.Dvp2_CS_Component__c+''+pCompCode.Dvp2_CS_Problem__c,pCompCode.Dvp2_CS_ProblemCode__c); 
+        }
+        
+        for(Dvp2_GLNumber_LiftCode__c liftCode :  Dvp2_GLNumber_LiftCode__c.getall().values()){
+            
+        mapliftCode.put(liftCode.name,liftCode); 
+        }
+
+        for(Dvp2_GLNumber_ProblemCode__c instProblemCode : Dvp2_GLNumber_ProblemCode__c.getall().values()){
+
+        mapProblemCode.put(instProblemCode.name,instProblemCode);   
+        }
+
+        for(WorkOrder insWorkOrder:newWorkOrders){
+            
+            string pCode = mapProblemCompCode.get(insWorkOrder.Dvp2_Component__c+''+insWorkOrder.Dvp2_Problem__c);
+            insWorkOrder.Dvp2_Problem_Code_N__c = pCode;    //populating problem code here
+            
+            
+            
+            insWorkOrder.Dvp2_GL_Number__c = mapliftCode.containsKey(insWorkOrder.Dvp2_Lift_Code__c)?(mapliftCode.get(insWorkOrder.Dvp2_Lift_Code__c).Dvp2_GL_Num_Prefix__c + mapliftCode.get(insWorkOrder.Dvp2_Lift_Code__c).Dvp2_GL_Num_Account__c):'';
+            
+            insWorkOrder.Dvp2_GL_Number__c+= mapProblemCode.containsKey(insWorkOrder.Dvp2_Problem_Code_N__c)?mapProblemCode.get(insWorkOrder.Dvp2_Problem_Code_N__c).Dvp2_GL_Suffix__c:'';
+            
+            system.debug('********insWorkOrder.Dvp2_GL_Number__c'+insWorkOrder.Dvp2_GL_Number__c);
+            
+            insWorkOrder.Dvp2_GL_Number__c=insWorkOrder.Dvp2_GL_Number__c!=null?insWorkOrder.Dvp2_GL_Number__c.replace('null',''):insWorkOrder.Dvp2_GL_Number__c;
+            
+            system.debug('********insWorkOrder.Dvp2_GL_Number__c final'+insWorkOrder.Dvp2_GL_Number__c);
+            
+            
+        
+        }
+    }   
+}
