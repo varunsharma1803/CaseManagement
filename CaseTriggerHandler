@@ -1,0 +1,47 @@
+/*
+    Name:            Dvp2_CaseTriggerHandler
+    Purpose:         Handler class for the Case Action class
+    Author:          Varun Sharma
+    Created Date:    Aug 2nd 2017  
+
+    Version       Modified By                     Modified Date
+    1.0           Varun Sharma                    Aug 2   2017
+    2.0           Raja Reddy Gaddam               Aug 23  2017
+    3.0           Neha Pandey                     Sep 14  2017
+    4.0           Sudeepthi                       Sep 22  2017
+    5.0           Varun Sharma                    Dec 4   2017 
+*/
+
+public with Sharing class Dvp2_CaseTriggerHandler{
+private boolean m_isExecuting = false;
+private integer BatchSize = 0;
+
+    public Dvp2_CaseTriggerHandler(boolean isExecuting, integer size){
+        m_isExecuting = isExecuting;
+        BatchSize = size;
+    }
+
+    public void OnBeforeInsert(List<Case> newCases){
+        System.debug('Case Trigger on Before Insert');
+        Dvp2_CaseAction.populateCreatedDateOnCase(newCases);
+        Dvp2_CaseAction.populateGLNumberChiefCase(newCases);
+        Dvp2_CaseAction.AutoPopulateLaborMileageCharge(newCases);
+    }
+
+    public void OnAfterInsert(List<Case> newListCases){
+        System.debug('Case Trigger on After Insert');
+        Dvp2_CaseAction.CreateNewWorkOrder(newListCases);
+        Dvp2_CaseAction.createCaseTeamMemberRole(newListCases);
+    }
+    
+    public void OnBeforeUpdate( List<Case> newCase, Map<ID, Case> newCaseMap , Map<ID, Case> oldCaseMap )
+    {
+        Dvp2_CaseAction.checkWOStatus(newCase,newCaseMap,oldCaseMap);
+        Dvp2_CaseAction.PopulateCreditDebitMemo(newCase);
+        Dvp2_CaseAction.populateGLNumberChiefCase(newCase);        
+    }
+    
+
+    
+
+}
