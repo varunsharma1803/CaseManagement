@@ -1,0 +1,743 @@
+/*
+Name:            LeadActions
+Purpose:         Sales leads to be automatically assigned to the Regional Manager based on the Postal Code or Country of the address of the lead and an email notification to be sent to the respective regional manager.
+                 This is LeadActionsclass, Lead Trigger Handler class for Lead Operations
+Author:          SaktheBalan Vadivel 
+Created Date:    Dec 15th 2016  
+
+Version       Modified By                     Modified Date
+1.0           SaktheBalan Vadivel             Nov 10th 2016
+1.1           Suresh/Kumud                    July 3rd 2017
+1.2           Sudeepthi                       July 21st 2017
+1.3           Srinivas                        Sept 15th 2017     Added code to Auto-update Recordtype and Brand based on Region Code
+1.4           Neha                            Nov 30th  2017     Added the vsg price book on the opportunity line item instead of standard price book
+Modified the existing class for VSG Phase - 2
+***************************************************************
+ 
+*/
+
+public without sharing class LeadActions
+{
+    
+    public static void AssignleadOwner(List<Lead> newLead){
+        
+        system.debug('newLead'+newLead);
+        String LeadRecordTypeId           = Schema.SObjectType.Lead.RecordTypeInfosByName.get('Chief').RecordTypeId;
+        String PostalCodeRecordTypeId     = Schema.SObjectType.Geography__c.RecordTypeInfosByName.get('Postal Code').RecordTypeId;
+        String CountryRecordTypeId        = Schema.SObjectType.Geography__C.RecordTypeInfosByName.get('Country').RecordTypeId;
+        Boolean IsDefaultUser;
+     
+        try{
+            for(Lead ld : newLead){
+                string poCode=ld.postalcode;
+                if(ld.RecordTypeId==LeadRecordTypeId || ld.Dvp2_Brand__c=='Chief'){    // Desc :phase 2 Change- Put only brand condition to execute same logic of lead assignment for chief brand
+                    IsDefaultUser=true;
+                    if(ld.countrycode=='US'){
+                        system.debug('Inside1'+ld.postalcode);
+                        if(!string.ISBLANK(ld.postalcode)){
+                            system.debug('Inside2');
+                            if(ld.postalcode.containsonly('1234567890-')){
+                                system.debug('Inside3'+ld.postalcode);
+                                if(ld.postalcode.length()>=5){
+                                    string PostalCode = ld.postalcode.substring(0,5);
+                                    system.debug('Inside4'+PostalCode);
+                                    List<Geography__C> pCode = [Select Territory_Name__c,Postal_Code_From__c,Postal_Code_To__c,Territory_Name__R.Regional_Manager__c from Geography__c where Postal_Code_From__c<= :PostalCode and Postal_Code_To__c>= :PostalCode and RecordTypeId=:PostalCodeRecordTypeId];
+                                    if(pCode.size()>0){
+                                        system.debug('Inside5'+pCode[0]);
+                                        ld.ownerID=pCode[0].Territory_Name__R.Regional_Manager__c;
+                                        ld.Notify_New_Owner__c=TRUE;
+                                        IsDefaultUser=false;
+                                    }
+                                }
+                            }   
+                        }
+                    }
+                    else
+                    {
+                        string countrycode = country_code__c.getInstance(ld.countrycode).Country__c;
+                        if(!string.ISBLANK(countrycode)){
+                            List<Geography__C> cntryCode = [Select Territory_Name__c,country__c,Territory_Name__R.Regional_Manager__c from Geography__c where Country__C = :countrycode and RecordTypeId=:CountryRecordTypeId];
+                            if(cntryCode.size()>0){
+                                system.debug('Inside6'+cntryCode[0]);
+                                ld.ownerID=cntryCode[0].Territory_Name__R.Regional_Manager__c;
+                                ld.Notify_New_Owner__c=TRUE;
+                                IsDefaultUser=false;
+                            }                           
+                        }
+                    }
+                    if(IsDefaultUser==true){
+                        ld.ownerID=system.label.Inside_Sales_Queue;
+                        ld.Notify_New_Owner__c=TRUE;
+                        
+                    }
+                }
+                 
+            }
+        } catch(System.DMLException e){
+            System.debug('The following exception has occurred: ' + e.getMessage());
+            ApexPages.Message myMsg = new ApexPages.Message(ApexPages.Severity.ERROR,'There was a problem assigning Lead owner. Please contact administrator');
+            ApexPages.addMessage(myMsg);
+        }
+    }  
+    
+    
+    /*
+    * Method :leadAssignmentInfo
+    * Parameters : List of lead
+    * Return :   Void
+    * Called by : It is called by Lead trigger handler class during lead conversion
+    * Author   : Kumud
+    * Purpose  : To create leads in SFDC classified by brand/location and assign Regional Managers by territorial Data : Part of  Phase2:VSG Implementations
+    * Created Date : 30/06/2017
+    * Modified by: Suresh 30/06/2017 
+    
+    */  
+    public static void leadAssignmentInfo(final List<Lead> newLead,boolean isUpdate){
+        
+        final Id directRecordTypeId = Schema.SObjectType.Lead.RecordTypeInfosByName.get('Direct').RecordTypeId;
+        final Id forwardRecordTypeId = Schema.SObjectType.Lead.RecordTypeInfosByName.get('Forward').RecordTypeId;
+        final Id rotaryRecordTypeId = Schema.SObjectType.Lead.RecordTypeInfosByName.get('Rotary').RecordTypeId;
+         final Id convertRecordTypeId = Schema.SObjectType.Lead.RecordTypeInfosByName.get('VSG Convert Lead').RecordTypeId;
+        final Id chiefRecordTypeId=Schema.SObjectType.Lead.RecordTypeInfosByName.get('Chief').RecordTypeId;
+        set<Id> setRecrordTypeId=new set<Id>{forwardRecordTypeId,directRecordTypeId,rotaryRecordTypeId,convertRecordTypeId};
+        final map<String,Dvp2_Regional_master__c> mapRegionMaster=new Map<String,Dvp2_Regional_master__c>();
+        final map<String,Dvp2_Regional_master__c> mapCountryRegionMaster=new Map<String,Dvp2_Regional_master__c>();
+        final map<String,Id> mapUserID=new map<String,ID>();
+        final set<String> setZipcode=new set<String>();
+        final set<string> setUsername=new Set<String>();
+        final Map<String,ID> mapGroupID=new Map<String,ID>();
+        final Set<String> setCountry=new Set<String>();
+        final map<String,String> mapCodeCountry=new Map<String,String>();
+        final map<string,User> mapUser=new map<string,User>();
+        final set<string> setEmail=new set<string>();
+        final set<string> setQueueName=new Set<String>{'Forward Lead Queue','Rotary Lead Queue','Direct Lead Queue','International Queue','Government Lead Queue'};
+        final List<lead>  listOfGovtLead=new List<Lead>();
+        
+        
+        
+        Schema.DescribeFieldResult fieldResult = User.Countrycode.getDescribe();
+        List<Schema.PicklistEntry> ple = fieldResult.getPicklistValues();
+        System.debug('Picklist::'+ple);
+              
+        
+        for( Schema.PicklistEntry f : ple){
+            System.debug(f.getLabel() +'::'+ f.getValue());
+            mapCodeCountry.put(f.getValue(),f.getLabel());
+        }
+        //List<Group> listGroup=new List<Group>([Select Id from Group where Type = 'Queue' AND (Name ='Forward Lead Queue' or Name ='Rotary Lead Queue')]);
+        for(Group instGrp:[Select Id,name from Group where Type = 'Queue' AND name in :setQueueName]){
+            mapGroupId.put(instGrp.name,instGrp.id);
+        }
+        for(Lead instLead:newLead){
+            if(String.isNotBlank(instLead.postalcode) && setRecrordTypeId.contains(instLead.recordtypeid)){
+                setZipcode.add(instLead.postalcode);
+            }
+           
+            if(String.isNotBlank(instLead.CountryCode) && setRecrordTypeId.contains(instLead.recordtypeid)){
+                setCountry.add(mapCodeCountry.get(instLead.CountryCode));
+            }
+            
+            // create list of goverment lead
+            if(instLead.recordtypeid==rotaryRecordTypeId && (instLead.Dvp2_Government_Entity__c || instLead.Dvp2_Primary_Business__c=='Military' || instLead.Dvp2_Primary_Business__c=='Government')){
+                listOfGovtLead.add(instLead);
+            } // end of if
+        }// end of loop
+        if(!setZipcode.isEmpty()){
+            for(Dvp2_Regional_master__c instRM:[select Dvp2_County__c,dvp2_Country__c,Dvp2_Regional_Manager__c,Name,Dvp2_Region_Name__c,Dvp2_Zip_Code__c from Dvp2_Regional_master__c where Dvp2_Zip_Code__c in :setZipcode]){
+                
+                mapRegionMaster.put(instRM.Dvp2_Zip_Code__c,instRM);
+                setUsername.add(instRM.Dvp2_Regional_Manager__c);
+                setEmail.add(instRM.Dvp2_Regional_Manager__c);
+            }
+        }// end of if       
+        
+        if(!setUsername.isEmpty()){
+        for(User u:[Select id,Email,Name,username from User where Email in :setUsername])
+            {
+                mapUser.put(u.Email,u);
+                system.debug('From User1' + u.Email);
+            }//end of loop
+        }//end of if
+        
+        system.debug('******setCountry888888'+setCountry);
+        if(!setCountry.isEmpty()){
+            for(Dvp2_Regional_master__c instRM:[select dvp2_Country__c,Dvp2_County__c,Dvp2_Regional_Manager__c,Name,Dvp2_Region_Name__c,Dvp2_Zip_Code__c from Dvp2_Regional_master__c where dvp2_Country__c in :setCountry]){
+                if(instRM.dvp2_Country__c!=null){
+                    mapCountryRegionMaster.put(instRM.dvp2_Country__c.toLowerCase(),instRM);
+                }
+                
+                setUsername.add(instRM.Dvp2_Regional_Manager__c);
+            }
+        }// end of if
+        
+        if(!setUsername.isEmpty()){
+            for(user instRM:[select id,Email from user where Email in :setUsername]){
+                mapUser.put(instRM.Email,instRM);
+                system.debug('From User2' + instRM.Email);
+                
+            }
+        }// end of if
+        
+        //Getting Region Code and RecordType Name from Custom Settings added by Srini
+        Map<String,String> mapCustSetting = new Map<String,String>();
+        for(Region_Code_CS__c s:Region_Code_CS__c.getAll().Values()){
+            mapCustSetting.put(s.Region_Code__c,s.RecordType_Name__c); 
+         }
+        //End
+        
+        system.debug('8888888888___'+mapCountryRegionMaster);
+        for(Lead instLead:newLead){
+            
+            if(setRecrordTypeId.contains(instLead.recordtypeid)&& instLead.postalcode!=null &&  instLead.postalcode.length()>=5 && mapRegionMaster.containsKey(instLead.postalcode.substring(0,5))){
+             
+                 instLead= getInstanceOfLeadByPostal(instLead,mapRegionMaster,mapUser,mapGroupID);
+                  system.debug('---instLead-------'+instLead);
+            }else if(instLead.countryCode=='US'){
+                    
+                if(instLead.Dvp2_Brand__c=='Rotary'){
+                     instLead.ownerID=mapGroupID.get('Rotary Lead Queue');
+                }else if(instLead.Dvp2_Brand__c=='Forward'){
+                     instLead.ownerID=mapGroupID.get('Forward Lead Queue');
+                }else if(instLead.Dvp2_Brand__c=='Direct'){
+                     instLead.ownerID=mapGroupID.get('Direct Lead Queue');
+                }   
+            }
+            else if(instLead.recordtypeid!=chiefRecordTypeId && (String.isBlank(instLead.dvp2_Brand__C) || String.isNotBlank(instLead.dvp2_Brand__C) ) && instLead.postalcode!=null && instLead.postalcode.containsonly('1234567890-') && instLead.postalcode.length()>=5 && mapRegionMaster.containsKey(instLead.postalcode.substring(0,5))){
+                
+                    instLead= getInstanceOfLeadByPostal(instLead,mapRegionMaster,mapUser,mapGroupID);
+                    if(mapCustSetting.containsKey(instLead.dvp2_Region_Code__c)){
+                        instLead.recordtypeid=Schema.SObjectType.Lead.RecordTypeInfosByName.get(mapCustSetting.get(instLead.dvp2_Region_Code__c)).RecordTypeId;
+                        instLead.dvp2_Brand__C=mapCustSetting.get(instLead.dvp2_Region_Code__c);
+                    }
+                    
+            }else if(setRecrordTypeId.contains(instLead.recordtypeid)){
+                    
+                    instLead.ownerID=mapGroupID.get('International Queue');
+            }
+            
+            if(isupdate && !setRecrordTypeId.contains(instLead.recordtypeid) && instLead.recordtypeid!=chiefRecordTypeId && (String.isBlank(instLead.dvp2_Brand__C) || String.isNotBlank(instLead.dvp2_Brand__C) ) && instLead.postalcode!=null && instLead.postalcode.containsonly('1234567890-') && instLead.postalcode.length()>=5 && mapRegionMaster.containsKey(instLead.postalcode.substring(0,5))){
+            
+                    if(mapCustSetting.containsKey(instLead.dvp2_Region_Code__c)){
+                            instLead.recordtypeid=Schema.SObjectType.Lead.RecordTypeInfosByName.get(mapCustSetting.get(instLead.dvp2_Region_Code__c)).RecordTypeId;
+                            instLead.dvp2_Brand__C=mapCustSetting.get(instLead.dvp2_Region_Code__c);
+                    }
+                
+            }           
+            
+            
+        }// end of loop
+        
+        // Assignment of goverement entity lead
+        for(Lead instLead:listOfGovtLead){
+            
+            instLead.ownerId=mapGroupId.get('Government Lead Queue');
+        
+        } // end here
+        
+    }// end of method
+     /*
+    * Method :leadAssimgmentOnUpdate
+    * Parameters : List of lead
+    * Return :   Void
+    * Called by : It is called by Lead trigger handler class during lead conversion
+    * Author   : Kumud
+    * Purpose  : To update the Lead based on the postal code
+    * Created Date : 28/09/2017
+    
+    */  
+    
+    public static void leadAssimgmentOnUpdate(List<Lead> listLead,Map<Id,Lead> newMap,Map<Id,Lead> oldMap){
+        List<Lead> lstLEadd=new  List<Lead>();
+        for(Lead  instLead:listLead){
+                if(newMap.get(instLead.Id).postalcode!=oldMap.get(instLead.Id).postalcode){         
+                    instLead.Dvp2_County__c = '';
+                    instLead.dvp2_Region__c = '';
+                    instLead.dvp2_Region_Code__c = '';
+                    instLead.Dvp2_Region_Code_lookup__c = Null;
+                    instLead.Dvp2_Region_Manager_Userlkup__c = Null;
+                    lstLEadd.add(instLead);
+                }
+        }
+        if(!lstLEadd.isEmpty()){
+        
+            leadAssignmentInfo(lstLEadd,true);
+            
+        }
+        
+    }
+    private  static Lead getInstanceOfLeadByPostal(Lead instLead,map<String,Dvp2_Regional_master__c> mapRegionMaster, map<string,User> mapUser,Map<String,ID> mapGroupID){
+    
+                instLead.Dvp2_County__c=mapRegionMaster.get(instLead.postalcode).Dvp2_County__c;
+                instLead.dvp2_Region__c=mapRegionMaster.get(instLead.postalcode).Dvp2_Region_Name__c;
+                instLead.dvp2_Region_Code__c=mapRegionMaster.get(instLead.postalcode).Name;
+                instLead.Dvp2_Region_Code_lookup__c=mapRegionMaster.get(instLead.postalcode).id;
+                string emailtemp=mapRegionMaster.get(instLead.postalcode).Dvp2_Regional_Manager__c;
+                instLead.Dvp2_Region_Manager_Userlkup__c=mapUser.containsKey(emailtemp)?mapUser.get(emailtemp).id:null;
+                system.debug('==========instLead.Dvp2_Region_Manager_Userlkup__c'+instLead.Dvp2_Region_Manager_Userlkup__c+'=======instLead.Dvp2_Brand__c'+instLead.Dvp2_Brand__c);
+                if(instLead.Dvp2_Region_Manager_Userlkup__c !=null && (instLead.Dvp2_Brand__c=='Rotary' ||  instLead.Dvp2_Brand__c=='Forward')){
+                     instLead.ownerID=instLead.Dvp2_Region_Manager_Userlkup__c;
+                }else if(instLead.Dvp2_Region_Manager_Userlkup__c ==null && instLead.Dvp2_Brand__c=='Rotary'){
+                     instLead.ownerID=mapGroupID.get('Rotary Lead Queue');
+                }else if(instLead.Dvp2_Region_Manager_Userlkup__c ==null && instLead.Dvp2_Brand__c=='Forward'){
+                     instLead.ownerID=mapGroupID.get('Forward Lead Queue');
+                }else if(instLead.Dvp2_Brand__c=='Direct'){
+                     instLead.ownerID=mapGroupID.get('Direct Lead Queue');
+                }
+        return instLead;
+    }
+    
+   
+    /*
+    * Method :createOpptyLineitems
+    * Parameters : List of lead
+    * Return :   Void
+    * Called by : It is called by Lead trigger handler class during lead conversion
+    * Author   : Kumud Thakur
+    * Purpose  :  To  create Opportunity line items  from Lead Products during lead conversion : Part of  Phase2:VSG Implementations
+    * Created Date     : 04/07/2017
+    * Modified by: Kumud/4 -07-2017/ 
+    ***************************************************
+      Modified by : Neha 30 Nov 2017
+      Desc: Add the vsg price book on the opportunity line item instead of standard price book
+    */  
+    public static void createOpptyLineitems(final List<Lead> listOfNewLeads){
+         
+        final Id directRecordTypeId = Schema.SObjectType.Lead.RecordTypeInfosByName.get('Direct').RecordTypeId;
+        final Id forwardRecordTypeId = Schema.SObjectType.Lead.RecordTypeInfosByName.get('Forward').RecordTypeId;
+        final Id rotaryRecordTypeId = Schema.SObjectType.Lead.RecordTypeInfosByName.get('Rotary').RecordTypeId;
+        final Id convertRecordTypeId = Schema.SObjectType.Lead.RecordTypeInfosByName.get('VSG Convert Lead').RecordTypeId;
+         set<Id> setRecrordTypeId=new set<Id>{forwardRecordTypeId,directRecordTypeId,rotaryRecordTypeId,convertRecordTypeId};
+        final Map<Id,List<Dvp2_LeadProduct__c>> mapIdLeadProds=new Map<Id,List<Dvp2_LeadProduct__c>>();  // map lead id with child lead productsset
+        final set<Id> setProductIds=new Set<Id>();//  collection of leads associated product.
+        final map<Id,PricebookEntry> mapProdPriceBook=new Map<Id,PricebookEntry>();
+        final List<Lead> listOfConvertedLeads=new List<Lead>();
+        final List<OpportunityLineItem> listOfOpptyLineItems=new List<OpportunityLineItem>();
+        final Map<Id,Id> mapleadAccountId=new map<Id,Id>();
+        final Map<Id,Id> mapleadOpptyId=new Map<Id,Id>();
+        final map<Id,Lead> mapLeadID=new map<Id,Lead>();
+        final set<Id> setConvertedOppId=new set<Id>();
+        List<Pricebook2> listPB =new List<Pricebook2>();
+        
+        for(Lead instLead:listOfNewLeads){
+        
+            if(setRecrordTypeId.contains(instLead.recordtypeID) && instLead.IsConverted && instLead.convertedOpportunityId!=null){
+                mapleadOpptyId.put(instLead.id,instLead.convertedOpportunityId);  // map converted lead with converetd oppty id
+                mapleadAccountId.Put(instLead.id,instLead.convertedAccountId); //
+                mapLeadID.put(instLead.id,instLead);
+                listOfConvertedLeads.add(instLead);
+            }
+        }// end of loop
+        
+        if(!mapleadOpptyId.isEmpty()){
+            
+            for(Dvp2_LeadProduct__c instLeadprod:[Select Product__c,Lead__c, Quantity__c from Dvp2_LeadProduct__c where Lead__c IN : mapleadOpptyId.keyset()]){
+            
+                if(mapIdLeadProds.containsKey(instLeadprod.Lead__c)){
+                    mapIdLeadProds.get(instLeadprod.Lead__c).add(instLeadprod);  // map lead id with associates lead product
+                }else{
+                    mapIdLeadProds.put(instLeadprod.Lead__c,new List<Dvp2_LeadProduct__c>{instLeadprod});
+                }
+                
+                setProductIds.add(instLeadprod.Product__c);
+            
+            }// end of loop
+        }
+       
+        if(!setProductIds.isEmpty()){
+            System.debug('value of setProductIds'+setProductIds);
+            for(PricebookEntry instPriceBkEntry:[Select Product2Id,UnitPrice from PricebookEntry where Product2Id IN : setProductIds and Pricebook2.IsStandard=false and IsActive=true]){
+                mapProdPriceBook.put(instPriceBkEntry.Product2Id,instPriceBkEntry); // associate product id with the vsg price boook.
+                System.debug('value of mapProdPriceBook'+mapProdPriceBook);
+                System.debug('value of instPriceBkEntry'+instPriceBkEntry);
+            }// end of loop
+            System.debug('value of mapProdPriceBook'+mapProdPriceBook);
+        }
+        
+        //  creating set of price book name
+        if(!Test.isRunningTest()){
+        final List<String> pbName=Label.Dvp2_PricebookName.split(',');// getting pricebook name from label.
+        //Getting Standard and vsg Price Book  
+        listPB = [select ID,isstandard,name from Pricebook2 where name in :pbName and isStandard =false];
+        System.debug('value of listPB'+listPB); 
+        List<Opportunity> listoppty=new List<Opportunity>();
+        for(Opportunity instOpp:[select pricebook2Id from opportunity where id  in :mapleadOpptyId.values()]){
+            System.debug('value of instOpp'+instOpp); 
+            instOpp.pricebook2id=listPB[0].Id;
+            listoppty.add(instOpp);
+
+         }
+        
+        if(!listOppty.isEmpty()){
+          update listoppty;
+        }
+       } 
+        for(Lead instLead:listOfConvertedLeads){   // 
+            
+            if(mapIdLeadProds.containsKey(instLead.id)){
+                for(Dvp2_LeadProduct__c instLeadProd:mapIdLeadProds.get(instLead.id)){
+                    
+                    if(mapProdPriceBook.containsKey(instLeadProd.Product__c)){   // creation of oppty line items data
+                        OpportunityLineItem opptyProd = new OpportunityLineItem();
+                        opptyProd.OpportunityId= instLead.convertedOpportunityId;
+                        System.debug('value of mapProdPriceBook.get(instLeadProd.product__C).id'+mapProdPriceBook.get(instLeadProd.product__C).id);
+                        opptyProd.PricebookEntryId =mapProdPriceBook.get(instLeadProd.product__C).id;
+                        opptyProd.Quantity=instLeadProd.Quantity__c;
+                        opptyProd.UnitPrice=mapProdPriceBook.get(instLeadProd.product__C).unitPrice;
+                        listOfOpptyLineItems.add(opptyProd);
+                    }else{
+                    
+                        instLead.addError('Price book is missing for this lead Product');
+                    }// end of inside if - else
+                    
+                    
+                }// end of inside loop
+            }// end of if
+            
+        }// end of loop
+        
+        if(!listOfOpptyLineItems.isEmpty()){
+            try{
+                insert listOfOpptyLineItems;  // insert of line items
+            }catch(DMLException e){  // caught DML Excetion
+                system.debug(e.getMessage());
+            }
+        }
+        
+        if(!listOfConvertedLeads.isEmpty()){
+             
+             updateAccountOppty(mapleadAccountId,mapleadOpptyId,mapLeadID);
+        
+        }
+        
+    }// end of method
+    /*  
+    Desc: Method to map brand and recordtype of  account and opportunity during lead conversion.
+    */
+    private static void updateAccountOppty(final Map<Id,Id> mapleadAccountId,final Map<Id,Id> mapleadOpptyId,final map<Id,lead> mapLeadID){
+        final map<ID,Account> mapAccount=new map<Id,Account>();
+         final map<ID,Opportunity> mapOpportunity=new map<ID,Opportunity>();
+        List<Account> listAccount=new List<Account>();
+        List<Opportunity> listOppty=new List<Opportunity>();
+        for(Account instAcc:[select recordtypeId,Dvp2_brand__C,Type from Account where id in:mapleadAccountId.values()]){
+        
+            mapAccount.put(instAcc.id,instAcc);
+             
+            
+        } // end
+        
+        for(Opportunity instOpp:[select recordtypeId,Dvp2_brand__C  from opportunity where id in :mapleadOpptyId.values()]){
+        
+            mapOpportunity.put(instOpp.id,instOpp);
+        }
+        system.debug('---mapLeadID-----'+mapLeadID);
+        
+        for(Lead instLead:mapLeadID.values()){
+           
+            mapAccount.get(instLead.convertedAccountID).recordtypeid=Schema.SObjectType.Account.RecordTypeInfosByName.get(mapLeadID.get(instLead.id).dvp2_brand__C).RecordTypeId;
+            mapAccount.get(instLead.convertedAccountID).Dvp2_Brand__C=instLead.dvp2_brand__C;
+            mapAccount.get(instLead.convertedAccountID).Type='End User';
+            listAccount.add(mapAccount.get(instLead.convertedAccountID));
+            
+            mapOpportunity.get(instLead.convertedOpportunityID).recordtypeID=Schema.SObjectType.Opportunity.RecordTypeInfosByName.get(mapLeadID.get(instLead.id).dvp2_brand__C).RecordTypeId;
+            mapOpportunity.get(instLead.convertedOpportunityID).dvp2_Brand__C=instLead.dvp2_brand__C;
+            
+            listOppty.add(mapOpportunity.get(instLead.convertedOpportunityID));
+        }// end of loop
+        
+        
+        
+        if(!listAccount.isEmpty()){
+            update listAccount;
+        } // end of if
+        
+        if(!listOppty.isEmpty()){
+            update listOppty;
+        }
+    
+    }
+
+    /*
+    * Method :sendEmailToDistributor
+    * Parameters : List of lead
+    * Return :   Void
+    * Called by : It is called by Lead trigger handler class after the owner is updated after lead creation
+    * Author   : Varun Sharma
+    * Purpose  :  To Send Email Template to the lead owner distributor as well as those contacts where Send Email Flag is true: Part of  Phase2:VSG Implementations
+    * Created Date     : 14/02/2018
+    ***************************************************
+    */  
+    public static void sendEmail(final List<Lead> listOfNewLeads, final Map<Id,Lead> mapOfOldLead){
+         
+        final Id directRecordTypeId = Schema.SObjectType.Lead.RecordTypeInfosByName.get('Direct').RecordTypeId;
+        final Id forwardRecordTypeId = Schema.SObjectType.Lead.RecordTypeInfosByName.get('Forward').RecordTypeId;
+        final Id rotaryRecordTypeId = Schema.SObjectType.Lead.RecordTypeInfosByName.get('Rotary').RecordTypeId;
+        final Id convertRecordTypeId = Schema.SObjectType.Lead.RecordTypeInfosByName.get('VSG Convert Lead').RecordTypeId;
+        set<Id> setRecordTypeId=new set<Id>{forwardRecordTypeId,directRecordTypeId,rotaryRecordTypeId,convertRecordTypeId};
+        
+        set<Id> setOfLeadOwnerIds = new set<Id>();
+        map<Id,String> mapUserIdEmail = new map<Id,String>();//User Id & Corresponding Email
+        map<Id,String> mapUserIdDistNum = new map<Id,String>();//In case of Partner User: User Id & Corresponding Distributor Account
+        map<String,List<String>> mapAccListContactEmail = new map<String,List<String>>();//Distributor Account & corresponding cc Email Ids from contacts
+        
+        List<String> toEmailIds = new List<String>(); // List of To Email Id
+        List<String> ccEmailIds = new List<String>(); // List of CC Email Id
+
+        EmailTemplate templateId = [Select Id from EmailTemplate where DeveloperName='Dvp2_Lead_Information_Notification'];
+        
+        //To Extract Owner Ids from Lead
+        for(Lead instOfLead : listOfNewLeads){
+            setOfLeadOwnerIds.add(instOfLead.OwnerId);
+        }
+        
+        //To create map of Lead Owner Id & Corresponding Email
+        //To create map of Lead Owner Id & Corresponding Distributor Account[In Case of Partner User]
+        for(User instOfUser : [Select Id, Email, Dvp2_Distributor_Number__c, Dvp2_IsPartnerUser__c from User where Id IN :setOfLeadOwnerIds ]){
+            
+            if(instOfUser.Email !=null)
+            mapUserIdEmail.put(instOfUser.Id, instOfUser.Email); //For incoming Leads Map of User Id and corresponding Email        
+            
+            if(instOfUser.Dvp2_IsPartnerUser__c==true && instOfUser.Dvp2_Distributor_Number__c !=null) //For incoming Leads if User is Partner User, then Map of user Id and Corresponding Distributor#
+            mapUserIdDistNum.put(instOfUser.Id,instOfUser.Dvp2_Distributor_Number__c);
+        }
+        
+        set<String> setOfDistAcc = new set<String>(mapUserIdDistNum.values());//Adding Distributor Account values to a set
+         
+        //For each Distributor Account, creating map of Distributor Account and corresponding List of eligible Contact Emails
+        for( Account acc : [Select Id, (Select Id, Dvp2_Send_Lead_Email__c, Email from Contacts), Dvp2_Company_Number__c from Account where Dvp2_Company_Number__c in :setOfDistAcc ]){
+        
+            List<String> lstOfEmail = new List<String>();
+        
+            for(Contact con : acc.Contacts){
+                if(con.Dvp2_Send_Lead_Email__c==true){
+                    lstOfEmail.add(con.Email);
+                }
+            }
+            mapAccListContactEmail.put(acc.Dvp2_Company_Number__c,lstOfEmail);
+        
+        }
+        
+        List<Messaging.SingleEmailMessage> emailList = new List<Messaging.SingleEmailMessage>();
+        
+        for(Lead instOfLead : listOfNewLeads ){
+            
+            Lead oldLead = mapOfOldLead.get(instOfLead.Id);
+            
+            //Execute only when there is change in the Owner
+            if( oldLead.OwnerId != instOfLead.OwnerId && setRecordTypeId.contains(instOfLead.RecordTypeId) ){
+                
+                
+                toEmailIds.add(mapUserIdEmail.get(instOfLead.OwnerId));
+                
+                ccEmailIds = mapAccListContactEmail.get(mapUserIdDistNum.get(instOfLead.OwnerId));
+                
+                Messaging.SingleEmailMessage mail = new Messaging.SingleEmailMessage();
+                mail.setTemplateID(templateId.Id);                
+                mail.setTargetObjectId(instOfLead.id);
+                mail.setToAddresses(toEmailIds);
+                mail.setCcAddresses(ccEmailIds);
+                mail.setSaveAsActivity(false);
+                mail.setTreatTargetObjectAsRecipient(false);
+                
+                emailList.add(mail);
+                        
+                toEmailIds.clear();//clearing "TO" list after every iteration for every new lead 
+            }
+        }
+        
+        if(!emailList.isEmpty())
+        Messaging.sendEmail(emailList,false);
+        
+        
+    }
+
+    /*
+    * Method :NewleadShareToRep
+    * Parameters : List of lead
+    * Return :   Void
+    * Called by : It is called by Lead trigger handler class after the lead is inserted
+    * Author   : Varun Sharma
+    * Purpose  :  To insert records in LeadShare record if the lead creator is Rep type user. Also future call would be made to update field LeadSharedWithUserIds with the user Ids, lead is shared with.
+    * Created Date     : 25/06/2018
+    ***************************************************
+    */  
+    
+    public static void NewleadShareToRep(final List<Lead> listOfNewLeads){
+        
+        final Id directRecordTypeId = Schema.SObjectType.Lead.RecordTypeInfosByName.get('Direct').RecordTypeId;
+        final Id forwardRecordTypeId = Schema.SObjectType.Lead.RecordTypeInfosByName.get('Forward').RecordTypeId;
+        final Id rotaryRecordTypeId = Schema.SObjectType.Lead.RecordTypeInfosByName.get('Rotary').RecordTypeId;
+        final Id convertRecordTypeId = Schema.SObjectType.Lead.RecordTypeInfosByName.get('VSG Convert Lead').RecordTypeId;
+        
+        set<Id> setRecordTypeId = new set<Id>{forwardRecordTypeId,directRecordTypeId,rotaryRecordTypeId,convertRecordTypeId};
+
+        set<Id> setOfLeadUserIds = new set<Id>();
+        set<Id> setOfLeadRepUserIds = new set<Id>();
+        List<LeadShare> leadShareListNew = new List<LeadShare>();
+        List<Id> listOfUserIds = new List<Id>();
+        List<Id> lstOfUserIdFuture = new List<Id>();
+        set<Id> setOfUserIdFuture = new set<Id>();
+        
+        for(Lead instOfLead : listOfNewLeads){
+            setOfLeadUserIds.add(instOfLead.CreatedById);
+        }
+        
+        for( User instOfUser : [Select Id, Dvp2_IsPartnerUser__c, Dvp2_Is_Rep__c from User where Id IN :setOfLeadUserIds and Dvp2_IsPartnerUser__c = true and Dvp2_Is_Rep__c = true ]){
+            setOfLeadRepUserIds.add(instOfUser.Id);
+        }
+        System.debug('@@@@setOfLeadRepUserIds'+setOfLeadRepUserIds);
+        
+        for(Lead newLead : listOfNewLeads){
+            
+            if( setRecordTypeId.contains(newLead.RecordTypeId) && setOfLeadRepUserIds.contains(newLead.CreatedById) ){
+                                
+                LeadShare ls = new LeadShare();
+                ls.leadId = newLead.Id;
+                ls.leadAccessLevel = 'Edit';
+                ls.userOrGroupId = newLead.CreatedById;
+                
+                leadShareListNew.add(ls); // To insert in Lead Share object
+
+            }
+
+        }//End of for loop
+        
+        if(!leadShareListNew.isEmpty()){
+			insert leadShareListNew;
+		}
+        
+    }
+
+    public static void trackUsers(final List<Lead> listOfNewLeads, final Map<Id,Lead>  mapOfNewLeads, final Map<Id,Lead> mapOfOldLeads){
+
+        final Id directRecordTypeId = Schema.SObjectType.Lead.RecordTypeInfosByName.get('Direct').RecordTypeId;
+        final Id forwardRecordTypeId = Schema.SObjectType.Lead.RecordTypeInfosByName.get('Forward').RecordTypeId;
+        final Id rotaryRecordTypeId = Schema.SObjectType.Lead.RecordTypeInfosByName.get('Rotary').RecordTypeId;
+        final Id convertRecordTypeId = Schema.SObjectType.Lead.RecordTypeInfosByName.get('VSG Convert Lead').RecordTypeId;
+        
+        set<Id> setRecordTypeId = new set<Id>{forwardRecordTypeId,directRecordTypeId,rotaryRecordTypeId,convertRecordTypeId};
+		
+		set<Id> setOfLeads = new set<Id>();
+		map<Id,set<Id>> mapLeadIdToRepUserId = new map<Id,set<Id>>();
+		set<Id> setOfRepUsers = new set<Id>();
+		List<Lead> lstToUpdate = new List<Lead>();
+
+		for(Lead instOfLead : listOfNewLeads){
+			if( setRecordTypeId.contains(instOfLead.RecordTypeId) ){
+				setOfLeads.add(instOfLead.Id);
+			}
+		}
+		System.debug('@@setOfLeads'+setOfLeads);
+		
+		for(User instOfUser : [ Select Id, Dvp2_IsPartnerUser__c, Dvp2_Is_Rep__c from User where Dvp2_IsPartnerUser__c=true and Dvp2_Is_Rep__c=true ]){
+			setOfRepUsers.add(instOfUser.Id);
+		}
+		System.debug('@@setOfRepUsers'+setOfRepUsers);
+		
+		List<LeadShare> listOfLeadShare = [ Select Id, LeadId, userOrGroupId, LeadAccessLevel, RowCause from LeadShare where LeadId IN :setOfLeads and LeadAccessLevel IN ('Edit','All') and RowCause IN ('Manual','Owner') and userOrGroupId IN :setOfRepUsers order by LeadId ];
+		
+		System.debug('@@Size of LeadShare'+listOfLeadShare.size());
+		
+		for(LeadShare instOfLeadShare : [ Select Id, LeadId, userOrGroupId, LeadAccessLevel, RowCause from LeadShare where LeadId IN :setOfLeads and LeadAccessLevel IN ('Edit','All') and RowCause IN ('Manual','Owner') and userOrGroupId IN :setOfRepUsers order by LeadId ]){
+			
+			if(mapLeadIdToRepUserId.containsKey(instOfLeadShare.LeadId)){
+				set<Id> usersId = mapLeadIdToRepUserId.get(instOfLeadShare.LeadId);
+				usersId.add(instOfLeadShare.userOrGroupId);
+				mapLeadIdToRepUserId.put(instOfLeadShare.LeadId,usersId);
+				System.debug('@@Inside if of mapLeadIdToRepUserId');
+			}
+			else{
+				mapLeadIdToRepUserId.put(instOfLeadShare.LeadId, new set<Id>{instOfLeadShare.userOrGroupId});
+				System.debug('@@Inside else of mapLeadIdToRepUserId');
+			}
+			
+		}
+		System.debug('@@mapLeadIdToRepUserId'+mapLeadIdToRepUserId);
+		
+		for(Lead instOfLead : listOfNewLeads){
+			if( setRecordTypeId.contains(instOfLead.RecordTypeId) && mapLeadIdToRepUserId.containsKey(instOfLead.Id) ){
+				set<Id> setOfUsrId = mapLeadIdToRepUserId.get(instOfLead.Id);
+				
+				List<Id> lstOfId = new List<Id>();
+				lstOfId.addAll(setOfUsrId);
+				String strIds = String.join(lstOfId,',');
+				//Set<String> str = new Set<String>(strIds.split(','));
+				
+				System.debug('Before - instOfLead.Dvp2_LeadSharedWithUserIds__c'+instOfLead.Dvp2_LeadSharedWithUserIds__c);
+				instOfLead.Dvp2_LeadSharedWithUserIds__c = strIds;
+				System.debug('After - instOfLead.Dvp2_LeadSharedWithUserIds__c'+instOfLead.Dvp2_LeadSharedWithUserIds__c);
+				
+			}
+		}
+				                
+    }  
+
+	public static void UpdateleadShareToRep(final List<Lead> listOfNewLeads){
+		
+		final Id directRecordTypeId = Schema.SObjectType.Lead.RecordTypeInfosByName.get('Direct').RecordTypeId;
+        final Id forwardRecordTypeId = Schema.SObjectType.Lead.RecordTypeInfosByName.get('Forward').RecordTypeId;
+        final Id rotaryRecordTypeId = Schema.SObjectType.Lead.RecordTypeInfosByName.get('Rotary').RecordTypeId;
+        final Id convertRecordTypeId = Schema.SObjectType.Lead.RecordTypeInfosByName.get('VSG Convert Lead').RecordTypeId;
+        
+        set<Id> setRecordTypeId = new set<Id>{forwardRecordTypeId,directRecordTypeId,rotaryRecordTypeId,convertRecordTypeId};
+		
+		set<String> setOfLeadFieldVal = new set<String>();
+		
+		System.debug('@@Inside UpdateleadShareToRep method');
+	
+		for(Lead instOfLead : listOfNewLeads){
+			
+			System.debug('@@Checking condition setRecordTypeId.contains(instOfLead.Id)'+setRecordTypeId.contains(instOfLead.RecordTypeId));
+			System.debug('@@Checking recordTypeId '+instOfLead.RecordTypeId);				
+			
+			 if( setRecordTypeId.contains(instOfLead.RecordTypeId) ){
+				 
+				 
+				 System.debug('@@@@instOfLead.Dvp2_LeadSharedWithUserIds__c'+instOfLead.Dvp2_LeadSharedWithUserIds__c);
+				 
+				 String str = instOfLead.Dvp2_LeadSharedWithUserIds__c;
+				 str = str.remove('{');
+				 str = str.remove('}');
+				 str = str.trim();
+				 
+				 List<String> strIds = str.split(',');
+				 //Set<String> setOfUserStrIds = new Set<String>{strIds};
+				 Set<String> setOfUserStrIds = new Set<String>();
+				 setOfUserStrIds.addAll(strIds);
+				 //setOfUserStrIds.add( String.valueOf(instOfLead.OwnerId) );
+				 
+				 System.debug('@@setOfUserStrIds'+setOfUserStrIds);
+				 
+				 InsertLeadShareFuture( instOfLead.Id,setOfUserStrIds );
+				 
+			 }
+		}	
+			
+	}
+	
+	@future
+    public static void InsertLeadShareFuture(Id newleadId, Set<String> userIdStrSet){
+		
+		System.debug('@@Inside InsertLeadShareFuture');
+		System.debug('userIdStrSet'+userIdStrSet);
+		System.debug('newleadId'+newleadId);
+		
+		for(String instOfStr : userIdStrSet)
+		{
+			
+			System.debug('@@Inside InsertLeadShareFuture for loop');
+			
+			Id userId = Id.valueOf(instOfStr);
+			
+			LeadShare ls = new LeadShare();
+			ls.LeadId = newleadId;
+			ls.userOrGroupId = userId;
+			ls.leadAccessLevel = 'Edit';
+			
+			insert ls;
+			
+			System.debug('Inserted for ls'+ls+'UserId'+userId);
+		}
+		
+	
+	}
+}
