@@ -1,0 +1,82 @@
+public without sharing class LeadTriggerHandler
+{
+    private boolean m_isExecuting = false;
+    private integer BatchSize = 0;
+    public static boolean IsFromBachJob ;
+    public static boolean isFromUploadAPI=false;
+    private final id forwardRecTypeID=Schema.SObjectType.Lead.RecordTypeInfosByName.get('Forward').RecordTypeId;
+    private final id rotaryRecTypeId=Schema.SObjectType.Lead.RecordTypeInfosByName.get('Rotary').RecordTypeId;
+    private final Id directRecTypeId=Schema.SObjectType.Lead.RecordTypeInfosByName.get('Direct').RecordTypeId;
+    private final Id convertedLeadRecTypeId=Schema.SObjectType.Lead.RecordTypeInfosByName.get('VSG Convert Lead').RecordTypeId;
+    private final Set<Id> setRecordtypeids=new set<ID>{forwardRecTypeID,rotaryRecTypeId,directRecTypeId,convertedLeadRecTypeId};
+    public LeadTriggerHandler(boolean isExecuting , integer size)
+    {
+        m_isExecuting=isExecuting;
+        BatchSize=size;
+    }
+    
+    public void OnBeforeInsert(List<Lead> newLead,List<Lead> oldLead, Map<Id,Lead> newLeadMap , Map<Id,Lead> oldLeadMap)
+    {
+        system.debug('Lead Trigger On Before Insert');
+        List<Lead> listLead=new List<Lead>(); // list of non chief leads
+        LeadActions.AssignleadOwner(newLead);
+        
+        //Create list of lead for non-chief lead
+        for(Lead instLead:newLead){
+        
+            if(setRecordtypeids.contains(instLead.recordtypeID)){
+                listLead.add(instLead); // add only non cheif lead
+            }
+            
+        }
+        // call below method only for non chief lead.
+        if(!listLead.isEmpty()){
+            LeadActions.leadAssignmentInfo(listLead,false);  
+        } // end of if
+        
+    
+        
+    }
+    
+    public void OnAfterInsert(List<Lead> newLead,List<Lead> oldLead, Map<Id,Lead> newLeadMap , Map<Id,Lead> oldLeadMap)
+    {
+        system.debug('Lead Trigger On After Insert');
+        LeadActions.NewleadShareToRep(newLead);
+    }
+     
+    public void OnBeforeUpdate(List<Lead> newLead,List<Lead> oldLead, Map<Id,Lead> newLeadMap , Map<Id,Lead> oldLeadMap)
+    {
+        system.debug('Lead Trigger On Before Update');
+        //LeadActions.leadCountyAssignmentForUpdate(newLead,oldLead,newLeadMap,oldLeadMap);
+        LeadActions.sendEmail(newLead,oldLeadMap);
+        LeadActions.leadAssimgmentOnUpdate(newLead,newLeadMap,oldLeadMap);      // part of phase 2 implementation
+        LeadActions.trackUsers(newLead,newLeadMap,oldLeadMap);
+    }
+    
+    public void OnAfterUpdate(List<Lead> newLead,List<Lead> oldLead, Map<Id,Lead> newLeadMap , Map<Id,Lead> oldLeadMap)
+    {
+        LeadActions.createOpptyLineitems(newLead);  // add by kumud
+        LeadActions.UpdateleadShareToRep(newLead);
+        system.debug('Lead Trigger On After Update');
+    }
+    /*     
+    public boolean IsTriggerContext
+    {
+        get{ return m_isExecuting;}
+    }
+    
+    public boolean IsVisualforcePageContext
+    {
+        get{ return !IsTriggerContext;}
+    }
+    
+    public boolean IsWebServiceContext
+    {
+        get{ return !IsTriggerContext;}
+    }
+    
+    public boolean IsExecuteAnonymousContext
+    {
+        get{ return !IsTriggerContext;}
+    }*/
+}
